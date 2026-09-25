@@ -1,3 +1,125 @@
+## Version 0.4.2
+Date: 2026-09-25
+
+### Milestone
+Implemented **Scenario Progression & Canonical Fidelity** to prevent campaigns from stalling in repetitive local exploration. No Cloudflare Worker changes are required.
+
+### Why this iteration was necessary
+The turn-19 Dinotopia debug export showed that the runtime could resolve movement/search correctly but had little machinery for advancing the world after those actions. The campaign had only Arthur as an NPC, broad survival/exploration threads, no scenario anchors, and no Adventure Director. It could therefore keep producing small local details without ever bringing important people, events, or transitions into play.
+
+The same debug export also showed a source-mode mismatch: the compiled campaign state could report a different Source Mode from the user's creation selection. v0.4.2 makes the player's selected Source Mode authoritative.
+
+### Save Schema v4
+Save schema increased from 3 to **4**. New state includes:
+- `creation_request` — preserves the exact campaign-creation selections/notes for future scenario repair or recompilation.
+- `scenario` — the hidden scenario framework.
+- `scenario.anchors[]` — structured events, encounters, discoveries, or transitions.
+- `scenario.director` — runtime pacing/progression bookkeeping.
+
+Existing schema-v1/v2/v3 saves migrate automatically. Old pending actions are cleared during migration because their stored adjudication objects predate the new update contract.
+
+### Scenario Anchors
+Campaign compilation now creates roughly 3–8 scenario anchors for a normal opening. Each anchor records:
+- stable ID and hidden/public label
+- status: pending, eligible, active, completed, bypassed, or impossible
+- importance: major, supporting, or optional
+- source role: canonical, source-inspired, or original
+- trigger conditions
+- completion conditions
+- adaptation guidance
+- blocking conditions
+
+Anchors are **not predetermined outcomes**. They define important developments the world should attempt to preserve or reach when causally compatible with player agency.
+
+### Source-mode enforcement
+The campaign compiler may no longer silently relabel the player's Source Mode. After compilation, local JavaScript force-locks `campaign.source_mode` to the exact UI selection.
+
+Runtime semantics are now explicit:
+- **Canonical** — preserve established source characters, major events, relationships, discoveries, and broad sequence whenever compatible with player agency. Adapt route/timing/location rather than dropping an event because exact staging changed.
+- **Adaptive** — preserve major source anchors and important characters while allowing freer relocation, reordering, combination, and branching.
+- **Inspirational** — source guides tone/themes; source events are not obligations.
+- **Original** — no source-fidelity obligation beyond the explicit premise/notes.
+
+Canonical/Adaptive anchors must never force a player choice or predetermined result.
+
+### Near-term source NPCs
+For source-guided campaigns, the compiler is now instructed to precompile important near-term source NPCs even when they are not yet visible. Such NPCs may begin with status `elsewhere`. This prevents an important character from being absent simply because the runtime has no entity record for them.
+
+### Adventure Director
+Added a runtime **Adventure Director** using GPT-6 Sol / Low. It runs after a committed player action when:
+- a major/supporting anchor is active or eligible;
+- a source-guided campaign still has unresolved non-optional anchors that need eligibility evaluation;
+- the campaign has gone two committed turns without meaningful development; or
+- movement/travel produced no meaningful development.
+
+The Director may:
+- advance an eligible scenario anchor;
+- allow an autonomous NPC to act;
+- create a scene transition;
+- reconcile stale threads/facts;
+- record a remote development when causally appropriate.
+
+The Director does **not** resolve character task uncertainty and never rolls probability. It operates on the same turn after the player's result is already committed. A Director failure is logged but cannot roll back the player's completed action.
+
+### World-can-come-to-player rule
+The runtime now explicitly rejects the idea that the player must discover a magic command or exact route to reach the next meaningful event. If a scenario anchor is eligible and an NPC/event can plausibly reach the protagonist, the world may move toward the player.
+
+Broad intentions such as “follow the coast until something worth investigating happens” should also be summarized through uneventful stretches instead of requiring repeated walking commands.
+
+### State and thread reconciliation
+The state-update contract now supports:
+- changing an existing world fact
+- removing an obsolete world fact
+- changing thread status
+- changing scenario-anchor status
+
+Outcome narration and the Adventure Director are instructed to remove/update stale facts and close/fail/dormant threads when reality changes, instead of leaving outdated priorities permanently active.
+
+### Non-probability assessment fix
+Consequential actions that do not actually have a success probability now use the internal assessment band `not_applicable` rather than allowing null probability to be interpreted as an extremely low chance. The player-facing referee should discuss the known consequence/uncertainty instead of saying the action is nearly impossible.
+
+### Legacy scenario bootstrap
+A migrated pre-v0.4.2 campaign receives an empty scenario framework marked `needs_bootstrap=true`. Before the next player action, the client performs a **one-time GPT-6 Astra / High scenario bootstrap** to create anchors from the existing authoritative campaign state without rewriting established history. After that, normal runtime progression uses Sol / Low.
+
+Important limitation: legacy bootstrap respects the Source Mode already stored in that save. If an older campaign was previously compiled with the wrong Source Mode, the migration does not guess what the player originally selected. For source-fidelity testing, starting a new campaign with Canonical or Adaptive selected is the cleanest validation.
+
+### Debugging additions
+Debug export now reports:
+- scenario mode
+- scenario anchor count
+- active/eligible anchor IDs
+- whether scenario bootstrap is still required
+- Director stagnation pressure (`turns_since_development`)
+- Adventure Director calls/no-ops/errors
+- scenario anchor status changes in update summaries
+
+### AI routing impact
+- Campaign compile: GPT-6 Astra / High (unchanged)
+- One-time legacy scenario bootstrap: GPT-6 Astra / High
+- Runtime Adventure Director: GPT-6 Sol / Low
+- Existing adjudication/narration/hint routing remains unchanged
+
+### Validation performed
+- Embedded JavaScript syntax checked successfully with Node.js.
+- Confirmed all runtime version labels/prompts report v0.4.2.
+- Confirmed save schema reports v4 and v1/v2/v3 are accepted for migration.
+- Confirmed `campaign.source_mode` is locally locked to the user's creation selection.
+- Confirmed scenario framework and Director schemas use strict structured output.
+- Confirmed old pending actions are discarded during schema migration to avoid incompatible v0.4.1 adjudication payloads.
+- Confirmed Adventure Director errors are isolated and do not undo a committed player action.
+- Confirmed no Cloudflare Worker change is required.
+
+### Recommended validation test
+1. Start a fresh Dinotopia campaign with **Canonical** (or Adaptive, if desired) explicitly selected.
+2. Ask for close adherence to *A Land Apart From Time* in Source / campaign notes.
+3. Spend a few actions on the beach without deliberately guessing the book's next scene.
+4. Verify the world introduces meaningful forward development rather than requiring repeated beach-walking/search commands.
+5. Confirm future scenario anchors are not exposed as spoilers in the player UI/hints.
+6. Confirm completed survival facts/threads are updated or closed rather than remaining permanently active.
+7. Export Debug after 5–10 turns and inspect scenario anchors/Director records if progression still feels wrong.
+
+---
+
 ## Version 0.4.1
 Date: 2026-09-25
 
