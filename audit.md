@@ -1,3 +1,116 @@
+## Version 0.4.3
+Date: 2026-09-25
+
+### Milestone
+Implemented **Context Optimization & Bounded Runtime Prompts** to stop ordinary turn costs from growing with campaign length. No Cloudflare Worker changes are required.
+
+### Why this iteration was necessary
+The turn-19 Dinotopia debug export showed routine Sol calls growing to roughly 12k–14k input tokens because adjudication and narration repeatedly received broad campaign state plus long transcript/history slices. The database already stores authoritative memory, so resending most of that state every call was redundant and would make later turns progressively more expensive.
+
+### Core architecture change
+Runtime prompting now follows the rule:
+
+> **The database remembers. The AI receives only the state needed for the current job.**
+
+The full save remains authoritative and is still exported for debugging, but ordinary AI calls now use phase-specific compact context builders.
+
+### Phase-specific context builders
+Added bounded context packages for:
+- adjudication
+- outcome narration
+- Adventure Director
+- hints
+- legacy scenario bootstrap
+
+Adjudication receives a compact campaign digest, current scene, relevant player capabilities/inventory/knowledge, relevant facts/NPCs, open threads, a small scenario-anchor slice, and only the most recent dialogue.
+
+Outcome narration receives an even smaller context focused on the current scene, fixed action result, causally relevant NPCs/facts/threads/anchors, and a few recent dialogue messages. It no longer receives the entire adjudication object or the broad runtime state.
+
+The Adventure Director receives compact anchor/NPC/thread/fact state plus a short recent-event digest instead of the entire world and event history.
+
+Hints continue to receive player-known information only, but that package is now bounded as well.
+
+### Fixed context limits
+Added `CONTEXT_POLICY` with bounded runtime slices. Current v0.4.3 defaults include:
+- adjudication dialogue: last 4 player/referee messages
+- outcome dialogue: last 3
+- hints dialogue: last 6
+- facts: up to 8
+- player knowledge: up to 8
+- known places: up to 4
+- relevant NPCs: up to 4 for ordinary context
+- scenario anchors: up to 4 for ordinary context
+- threads: up to 6
+- recent Director events: up to 6
+
+Selections favor present/named/relevant entities and recent state rather than blindly taking the entire campaign database.
+
+### Relevance selection
+Added lightweight local lexical relevance selection. When a collection exceeds its context cap, the client scores entries against the current player action while retaining a mild recency preference. Present NPCs and explicitly named NPCs are always prioritized.
+
+This is local JavaScript; it does not require an extra AI call.
+
+### Reduced repeated prose/state
+- Ordinary adjudication uses a lean runtime campaign digest rather than the full campaign object.
+- Player concept/background are omitted from routine turn prompts unless a broader context genuinely needs them.
+- Operational JSON is serialized compactly rather than pretty-printed.
+- Outcome narration receives a compact adjudication projection instead of the entire structured adjudication response.
+- Known-place lists, hidden NPC state, facts, and scenario anchors are capped by job.
+
+### Adventure Director cost control
+The v0.4.2 Director could be invoked after nearly every committed turn in a source-guided campaign simply because pending anchors existed. v0.4.3 now calls the Director when:
+- a major/supporting anchor is active or eligible;
+- the campaign has gone two committed turns without meaningful development;
+- a pending source anchor exists and the just-completed action meaningfully changed state; or
+- source progression pressure has begun to build during movement/observation/conversation/rest.
+
+This preserves world motion without paying for a separate Director call after every trivial action.
+
+### Request-size diagnostics
+Every gateway call now records local request metrics:
+- instruction characters
+- dynamic input characters
+- Structured Output schema characters
+- approximate pre-API input-token count
+- context-policy version
+
+Debug export now includes `request_size_summary` over recent calls and the active `CONTEXT_POLICY`. This makes future cost regressions visible directly in the debug file.
+
+### Validation fixture
+Using the existing turn-19 Dinotopia debug state as a fixed test fixture, the serialized authoritative state/context sizes changed approximately as follows:
+
+- previous broad `currentContext()` payload: **34,394 characters (~8,599 rough tokens)**
+- v0.4.3 adjudication context: **10,803 characters (~2,701 rough tokens)**
+- v0.4.3 outcome context: **8,261 characters (~2,066 rough tokens)**
+- v0.4.3 Director context: **8,167 characters (~2,042 rough tokens)**
+- v0.4.3 hint context: **7,889 characters (~1,973 rough tokens)**
+
+These figures measure the state/context JSON only; actual API input also includes stable instructions and the Structured Output schema. The important change is that context size is now bounded instead of growing with the complete transcript/event history.
+
+### Additional cleanup
+- Removed a duplicated deterministic-success branch in the likelihood helper.
+- Structured Output schema names now use the v0.4.3 identifier.
+- All visible/runtime version labels and prompts report v0.4.3.
+
+### Validation performed
+- Embedded JavaScript syntax checked successfully with Node.js.
+- Context builders executed against the turn-19 Dinotopia debug state without errors.
+- Confirmed ordinary context packages are materially smaller than the former broad context payload.
+- Confirmed context collections have fixed caps so transcript/history growth does not linearly enlarge ordinary prompts.
+- Confirmed the full authoritative save remains unchanged and is still available in Save/Debug exports.
+- Confirmed no Cloudflare Worker change is required.
+
+### Recommended validation test
+1. Upload v0.4.3 and start or continue a campaign.
+2. Play 10–20 turns.
+3. Export Debug.
+4. Inspect `diagnostic_summary.request_size_summary` and the `request_metrics` attached to recent adjudication/narration/Director entries.
+5. Verify request sizes remain in roughly the same range instead of climbing every turn.
+6. Compare OpenAI usage after a similar-length session to the v0.4.2 turn-19 session.
+7. If a model ever appears to forget a relevant established fact, use the debug export to identify which context selector omitted it before increasing any caps globally.
+
+---
+
 ## Version 0.4.2
 Date: 2026-09-25
 

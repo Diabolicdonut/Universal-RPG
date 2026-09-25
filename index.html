@@ -47,7 +47,7 @@
 <body>
 <div class="app" id="app">
   <header>
-    <div class="brand">Universal RPG</div><div class="version">v0.4.2</div>
+    <div class="brand">Universal RPG</div><div class="version">v0.4.3</div>
     <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Not connected</span></div>
     <div class="spacer"></div>
     <button class="btn small" id="newBtn">New Campaign</button>
@@ -115,7 +115,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "0.4.2";
+  const APP_VERSION = "0.4.3";
   const SCHEMA_VERSION = 4;
   const STATE_KEY = "universalRpg.state.v0_4";
   const LEGACY_STATE_KEYS = ["universalRpg.state.v0_3", "universalRpg.state.v0_2", "universalRpg.state.v0_1"];
@@ -345,7 +345,7 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
   function outputFormatFor(mode){
     const schema=STRUCTURED_SCHEMAS[mode];
     if(!schema) return null;
-    return {type:"json_schema",name:`universal_rpg_${mode}_v042`,strict:true,schema};
+    return {type:"json_schema",name:`universal_rpg_${mode}_v043`,strict:true,schema};
   }
 
   // Probability Builder v1.0 — calibrated semantic resolution model.
@@ -612,6 +612,13 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
     };
     const format=outputFormatFor(mode);
     if(format) request.text={format};
+    const requestMetrics={
+      instructions_chars:AI_SYSTEM_PROMPT.length,
+      input_chars:String(input||"").length,
+      schema_chars:format?JSON.stringify(format).length:0,
+      approximate_input_tokens:Math.ceil((AI_SYSTEM_PROMPT.length+String(input||"").length+(format?JSON.stringify(format).length:0))/4),
+      context_policy_version:"1.0"
+    };
 
     let r;
     try{
@@ -643,39 +650,239 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
       status:apiResult.status||"completed",
       usage:apiResult.usage||null,
       openai_request_id:gateway.openai_request_id||null,
-      gateway_version:gateway.gateway_version||null
+      gateway_version:gateway.gateway_version||null,
+      request_metrics:requestMetrics
     };
   }
 
-  function currentContext(){
+  // Context Optimization v1.0 — the save/database is authoritative memory. AI calls receive only
+  // the slice of state needed for the current job, so prompt size stays approximately bounded as a campaign grows.
+  const CONTEXT_POLICY = Object.freeze({
+    adjudication_messages:4,
+    outcome_messages:3,
+    hint_messages:6,
+    max_facts:8,
+    max_knowledge:8,
+    max_places:4,
+    max_npcs:4,
+    max_anchors:4,
+    max_threads:6,
+    max_events:6,
+    max_inventory:20,
+    max_text_chars:900
+  });
+
+  function compactText(value,max=CONTEXT_POLICY.max_text_chars){
+    const text=String(value??"").replace(/\s+/g," ").trim();
+    return text.length<=max?text:text.slice(0,Math.max(0,max-1))+"…";
+  }
+
+  function queryTerms(text){
+    const stop=new Set(["the","and","for","with","that","this","from","into","onto","then","what","where","when","will","would","could","should","have","has","had","his","her","their","there","about","after","before","want","look","ask","tell","try","make","take","just","some","something"]);
+    return [...new Set(String(text||"").toLowerCase().match(/[a-z0-9_'-]{3,}/g)||[])].filter(t=>!stop.has(t)).slice(0,24);
+  }
+
+  function selectRelevant(items,query,max,getText){
+    const arr=Array.isArray(items)?items:[];
+    if(arr.length<=max) return arr.slice();
+    const terms=queryTerms(query);
+    const scored=arr.map((item,index)=>{
+      const hay=String(getText(item)||"").toLowerCase();
+      let score=0;
+      for(const term of terms) if(hay.includes(term)) score+=1;
+      // Slight recency preference keeps newly established state available when lexical relevance ties.
+      score += index/Math.max(1,arr.length)*0.15;
+      return {item,index,score};
+    }).sort((a,b)=>b.score-a.score||b.index-a.index);
+    return scored.slice(0,max).sort((a,b)=>a.index-b.index).map(x=>x.item);
+  }
+
+  function compactCampaign(){
+    const c=state.campaign||{};
     return {
-      campaign:state.campaign,
-      player:state.player,
-      world:state.world,
-      npcs:state.npcs,
-      threads:state.threads,
-      clocks:state.clocks,
-      scenario:state.scenario,
-      creation_request:state.creation_request,
-      recent_transcript:(state.transcript||[]).filter(m=>m.role!=="hint").slice(-16),
-      recent_events:(state.event_log||[]).slice(-20),
-      turn:state.turn,
-      revision:state.revision
+      id:c.id||"",title:c.title||"",genre:compactText(c.genre,300),premise:compactText(c.premise,700),tone:compactText(c.tone,300),era_technology:compactText(c.era_technology,300),source_mode:c.source_mode||"",
+      foundation:(c.foundation||[]).slice(0,8).map(x=>compactText(x,500)),
+      generation_constraints:{allowed:(c.generation_constraints?.allowed||[]).slice(0,6).map(x=>compactText(x,450)),prohibited:(c.generation_constraints?.prohibited||[]).slice(0,6).map(x=>compactText(x,450))},
+      source_policy:c.source_policy?{fidelity_goal:compactText(c.source_policy.fidelity_goal,500),deviation_policy:compactText(c.source_policy.deviation_policy,500)}:null
+    };
+  }
+
+  function runtimeCampaign(){
+    const c=state.campaign||{};
+    return {title:c.title||"",genre:compactText(c.genre,220),premise:compactText(c.premise,450),tone:compactText(c.tone,260),era_technology:compactText(c.era_technology,220),source_mode:c.source_mode||"",foundation:(c.foundation||[]).slice(0,5).map(x=>compactText(x,350)),generation_constraints:{allowed:(c.generation_constraints?.allowed||[]).slice(0,3).map(x=>compactText(x,300)),prohibited:(c.generation_constraints?.prohibited||[]).slice(0,4).map(x=>compactText(x,300))},source_policy:c.source_policy?{fidelity_goal:compactText(c.source_policy.fidelity_goal,350),deviation_policy:compactText(c.source_policy.deviation_policy,350)}:null};
+  }
+
+  function compactPlace(p,{hidden=false}={}){
+    if(!p) return null;
+    const out={id:p.id,name:p.name,public_description:compactText(p.public_description,700)};
+    if(hidden){
+      out.hidden_facts=(p.hidden_facts||[]).slice(0,6).map(x=>compactText(x,500));
+      out.generation_constraints=(p.generation_constraints||[]).slice(0,6).map(x=>compactText(x,500));
+    }
+    return out;
+  }
+
+  function compactKnownPlaces(query,max=CONTEXT_POLICY.max_places){
+    const currentId=state.world?.current_place?.id;
+    const places=selectRelevant((state.world?.known_places||[]).filter(p=>p.id!==currentId),query,max-1,p=>`${p.name} ${p.public_description}`);
+    return [compactPlace(state.world?.current_place),...places.map(p=>compactPlace(p))].filter(Boolean).slice(0,max);
+  }
+
+  function compactPlayer(query,{includeHidden=true,minimal=false}={}){
+    const p=state.player||{};
+    const knowledge=selectRelevant(p.knowledge||[],query,CONTEXT_POLICY.max_knowledge,k=>`${k.text} ${k.confidence}`);
+    const inventory=selectRelevant(p.inventory||[],query,CONTEXT_POLICY.max_inventory,i=>`${i.name} ${i.description}`);
+    const out={id:p.id||"",name:p.name||"",condition:compactText(p.condition,500),public_capabilities:p.public_capabilities||[],limitations:(p.limitations||[]).slice(0,6),inventory,knowledge};
+    if(!minimal){ out.concept=compactText(p.concept,350); out.background=compactText(p.background,500); }
+    if(includeHidden) out.hidden_capabilities=p.hidden_capabilities||[];
+    return out;
+  }
+
+  function compactNpc(n,{hidden=true}={}){
+    if(!n) return null;
+    const out={
+      id:n.id,name:n.name,status:n.status,
+      public:n.public?{role:compactText(n.public.role,250),relationship:compactText(n.public.relationship,350),description:compactText(n.public.description,500),known_traits:(n.public.known_traits||[]).slice(0,6)}:null,
+      capabilities:(n.capabilities||[]).slice(0,6)
+    };
+    if(hidden) out.hidden={
+      nature:compactText(n.hidden?.nature,350),
+      goals:(n.hidden?.goals||[]).slice(0,4).map(x=>compactText(x,350)),
+      knowledge:(n.hidden?.knowledge||[]).slice(0,4).map(x=>compactText(x,350)),
+      loyalties:(n.hidden?.loyalties||[]).slice(0,4).map(x=>compactText(x,250)),
+      fears:(n.hidden?.fears||[]).slice(0,3).map(x=>compactText(x,250)),
+      secrets:(n.hidden?.secrets||[]).slice(0,3).map(x=>compactText(x,350)),
+      temperament:compactText(n.hidden?.temperament,350),
+      current_intention:compactText(n.hidden?.current_intention,400),
+      relationship:n.hidden?.relationship||null
+    };
+    return out;
+  }
+
+  function compactNpcs(query,{hidden=true,max=CONTEXT_POLICY.max_npcs}={}){
+    const all=(state.npcs||[]).filter(n=>n.status!=="removed");
+    const q=String(query||"").toLowerCase();
+    const priority=[];
+    for(const n of all){
+      if(n.status==="present" || (n.name&&q.includes(n.name.toLowerCase())) || (n.id&&q.includes(n.id.toLowerCase()))) priority.push(n);
+    }
+    const ids=new Set(priority.map(n=>n.id));
+    const rest=selectRelevant(all.filter(n=>!ids.has(n.id)),query,Math.max(0,max-priority.length),n=>`${n.name} ${n.public?.role||""} ${n.public?.description||""} ${n.hidden?.current_intention||""}`);
+    return [...priority,...rest].slice(0,max).map(n=>compactNpc(n,{hidden}));
+  }
+
+  function compactFacts(query,{hidden=true,max=CONTEXT_POLICY.max_facts}={}){
+    const facts=(state.world?.facts||[]).filter(f=>hidden||f.visibility!=="hidden");
+    return selectRelevant(facts,query,max,f=>f.text).map(f=>({id:f.id,visibility:f.visibility,text:compactText(f.text,550)}));
+  }
+
+  function compactThreads({publicOnly=false,max=CONTEXT_POLICY.max_threads}={}){
+    const threads=(state.threads||[]).filter(t=>!publicOnly||t.visibility!=="hidden");
+    const rank={open:0,dormant:1,failed:2,closed:3};
+    return threads.slice().sort((a,b)=>(rank[a.status]??9)-(rank[b.status]??9)).slice(0,max).map(t=>({id:t.id,label:compactText(t.label,350),status:t.status,visibility:t.visibility}));
+  }
+
+  function compactAnchor(a){
+    return {id:a.id,label:compactText(a.label,350),status:a.status,importance:a.importance,source_role:a.source_role,visibility:a.visibility,trigger_conditions:(a.trigger_conditions||[]).slice(0,4).map(x=>compactText(x,400)),completion_conditions:(a.completion_conditions||[]).slice(0,4).map(x=>compactText(x,400)),adaptation_guidance:(a.adaptation_guidance||[]).slice(0,3).map(x=>compactText(x,400)),blocking_conditions:(a.blocking_conditions||[]).slice(0,3).map(x=>compactText(x,400))};
+  }
+
+  function compactScenario(query,{publicOnly=false,max=CONTEXT_POLICY.max_anchors}={}){
+    const s=state.scenario||{};
+    const anchors=(s.anchors||[]).filter(a=>!publicOnly||a.visibility!=="hidden");
+    const statusRank={active:0,eligible:1,pending:2,completed:3,bypassed:4,impossible:5};
+    const important=anchors.filter(a=>["active","eligible"].includes(a.status));
+    const ids=new Set(important.map(a=>a.id));
+    const rest=selectRelevant(anchors.filter(a=>!ids.has(a.id)),query,Math.max(0,max-important.length),a=>`${a.label} ${(a.trigger_conditions||[]).join(" ")} ${(a.adaptation_guidance||[]).join(" ")}`).sort((a,b)=>(statusRank[a.status]??9)-(statusRank[b.status]??9));
+    return {mode:s.mode||"original",objective:compactText(s.objective,600),anchors:[...important,...rest].slice(0,max).map(compactAnchor),director_rules:(s.director_rules||[]).slice(0,6).map(x=>compactText(x,450)),director:s.director||null};
+  }
+
+  function recentTranscript(limit,roles=["player","narrator"]){
+    return (state.transcript||[]).filter(m=>roles.includes(m.role)).slice(-limit).map(m=>({role:m.role,text:compactText(m.text,CONTEXT_POLICY.max_text_chars),turn:m.turn}));
+  }
+
+  function compactEvent(e){
+    const d=e?.data||{};
+    return {turn:e?.turn,type:e?.type,at:e?.at,data:{intent:compactText(d.intent||d.intent_summary||"",350),action_kind:d.action_kind||"",outcome:d.outcome||"",success:typeof d.success==="boolean"?d.success:undefined,magnitude:d.magnitude||"",consequence_summary:compactText(d.consequence_summary||d.development_summary||"",450),current_place:d.updates?.current_place||undefined,thread_status_changed:d.updates?.thread_status_changed||undefined,anchor_status_changed:d.updates?.anchor_status_changed||undefined}};
+  }
+
+  function compactResources({hidden=true}={}){
+    return (state.world?.resources||[]).filter(r=>hidden||r.visibility!=="hidden").slice(0,16);
+  }
+
+  function adjudicationContext(playerText){
+    return {
+      campaign:runtimeCampaign(),
+      scene:{time_label:state.world?.time_label||"",current_place:compactPlace(state.world?.current_place,{hidden:true}),known_places:compactKnownPlaces(playerText),resources:compactResources({hidden:true})},
+      player:compactPlayer(playerText,{includeHidden:true,minimal:true}),
+      relevant_facts:compactFacts(playerText,{hidden:true}),
+      relevant_npcs:compactNpcs(playerText,{hidden:true}),
+      threads:compactThreads(),
+      scenario:compactScenario(playerText,{publicOnly:false,max:3}),
+      recent_dialogue:recentTranscript(CONTEXT_POLICY.adjudication_messages,["player","narrator"]),
+      turn:state.turn,revision:state.revision
+    };
+  }
+
+  function outcomeContext(playerText,adjudication){
+    const query=`${playerText} ${adjudication?.intent_summary||""}`;
+    return {
+      campaign:{title:state.campaign?.title||"",tone:compactText(state.campaign?.tone,300),source_mode:state.campaign?.source_mode||"",source_policy:state.campaign?.source_policy||null},
+      scene:{time_label:state.world?.time_label||"",current_place:compactPlace(state.world?.current_place,{hidden:true}),resources:compactResources({hidden:true})},
+      player:compactPlayer(query,{includeHidden:true,minimal:true}),
+      relevant_facts:compactFacts(query,{hidden:true,max:8}),
+      relevant_npcs:compactNpcs(query,{hidden:true,max:4}),
+      threads:compactThreads({max:6}),
+      scenario:compactScenario(query,{publicOnly:false,max:4}),
+      recent_dialogue:recentTranscript(CONTEXT_POLICY.outcome_messages,["player","narrator"]),
+      turn:state.turn,revision:state.revision
+    };
+  }
+
+  function directorContext(trigger){
+    const query=`${trigger?.intent||""} ${trigger?.consequence_summary||""}`;
+    return {
+      campaign:compactCampaign(),
+      scene:{time_label:state.world?.time_label||"",current_place:compactPlace(state.world?.current_place,{hidden:true}),resources:compactResources({hidden:true})},
+      player:{id:state.player?.id||"",name:state.player?.name||"",condition:compactText(state.player?.condition,500)},
+      facts:compactFacts(query,{hidden:true,max:8}),
+      npcs:compactNpcs(query,{hidden:true,max:6}),
+      threads:compactThreads({max:8}),
+      scenario:compactScenario(query,{publicOnly:false,max:6}),
+      recent_events:(state.event_log||[]).slice(-CONTEXT_POLICY.max_events).map(compactEvent),
+      trigger,turn:state.turn,revision:state.revision
+    };
+  }
+
+  function scenarioBootstrapContext(){
+    return {
+      campaign:compactCampaign(),
+      creation_request:state.creation_request||null,
+      player:compactPlayer("scenario campaign source",{includeHidden:true}),
+      world:{time_label:state.world?.time_label||"",current_place:compactPlace(state.world?.current_place,{hidden:true}),known_places:compactKnownPlaces("scenario campaign source",10),resources:compactResources({hidden:true}),facts:compactFacts("scenario campaign source",{hidden:true,max:16})},
+      npcs:compactNpcs("scenario campaign source",{hidden:true,max:10}),
+      threads:compactThreads({max:12}),
+      recent_dialogue:recentTranscript(6,["player","narrator"]),
+      turn:state.turn,revision:state.revision
     };
   }
 
   function playerFacingHintContext(){
-    const publicPlace=(p)=>p?{id:p.id,name:p.name,public_description:p.public_description}:null;
+    const query=(state.transcript||[]).filter(m=>m.role==="player").slice(-1)[0]?.text||"";
     return {
-      campaign:{title:state.campaign?.title||"",genre:state.campaign?.genre||"",premise:state.campaign?.premise||"",tone:state.campaign?.tone||"",era_technology:state.campaign?.era_technology||"",source_mode:state.campaign?.source_mode||""},
-      player:{name:state.player?.name||"",concept:state.player?.concept||"",background:state.player?.background||"",condition:state.player?.condition||"",public_capabilities:state.player?.public_capabilities||[],inventory:state.player?.inventory||[],knowledge:state.player?.knowledge||[]},
-      world:{time_label:state.world?.time_label||"",current_place:publicPlace(state.world?.current_place),known_places:(state.world?.known_places||[]).map(publicPlace),resources:(state.world?.resources||[]).filter(r=>r.visibility!=="hidden"),facts:(state.world?.facts||[]).filter(f=>f.visibility!=="hidden")},
-      npcs:(state.npcs||[]).filter(n=>n.status!=="removed").map(n=>({id:n.id,name:n.name,status:n.status,public:n.public})),
-      open_situations:(state.threads||[]).filter(t=>t.visibility!=="hidden"&&t.status==="open"),
-      public_scenario_anchors:(state.scenario?.anchors||[]).filter(a=>a.visibility==="public"&&["eligible","active"].includes(a.status)).map(a=>({id:a.id,label:a.label,status:a.status,importance:a.importance})),
-      recent_transcript:(state.transcript||[]).filter(m=>["player","narrator"].includes(m.role)).slice(-12),
-      pending_action:state.pending_action?{intent_summary:state.pending_action.intent_summary,assessment_message:state.pending_action.assessment_message}:null
+      campaign:{title:state.campaign?.title||"",genre:compactText(state.campaign?.genre,250),premise:compactText(state.campaign?.premise,500),tone:compactText(state.campaign?.tone,250),source_mode:state.campaign?.source_mode||""},
+      player:{name:state.player?.name||"",condition:compactText(state.player?.condition,450),public_capabilities:state.player?.public_capabilities||[],inventory:selectRelevant(state.player?.inventory||[],query,12,i=>`${i.name} ${i.description}`),knowledge:selectRelevant(state.player?.knowledge||[],query,8,k=>k.text)},
+      scene:{time_label:state.world?.time_label||"",current_place:compactPlace(state.world?.current_place),known_places:compactKnownPlaces(query,5),resources:compactResources({hidden:false}),facts:compactFacts(query,{hidden:false,max:8})},
+      npcs:compactNpcs(query,{hidden:false,max:5}),
+      open_situations:compactThreads({publicOnly:true,max:6}).filter(t=>t.status==="open"),
+      public_scenario:compactScenario(query,{publicOnly:true,max:3}),
+      recent_dialogue:recentTranscript(CONTEXT_POLICY.hint_messages,["player","narrator"]),
+      pending_action:state.pending_action?{intent_summary:compactText(state.pending_action.intent_summary,400),assessment_message:compactText(state.pending_action.assessment_message,600)}:null
     };
+  }
+
+  function currentContext(){
+    // Full context is retained for diagnostics/backward compatibility only. Runtime AI prompts use phase-specific compact contexts above.
+    return {campaign:state.campaign,player:state.player,world:state.world,npcs:state.npcs,threads:state.threads,clocks:state.clocks,scenario:state.scenario,creation_request:state.creation_request,recent_transcript:(state.transcript||[]).filter(m=>m.role!=="hint").slice(-16),recent_events:(state.event_log||[]).slice(-20),turn:state.turn,revision:state.revision};
   }
 
   function hintPrompt(style){
@@ -684,7 +891,7 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
       options:"Offer 2-4 plausible next actions or questions based on known information. Keep them concise and do not rank them as the correct answer.",
       direct:"Give one or two concrete suggestions for getting unstuck, with a brief reason grounded in known information. Do not reveal hidden facts or guarantee success."
     };
-    return `UNIVERSAL RPG — PLAYER HINT v0.4.2
+    return `UNIVERSAL RPG — PLAYER HINT v0.4.3
 
 This is optional out-of-character help. It is NOT an in-world action and must not advance time, resolve uncertainty, trigger NPC actions, mutate state, or establish new canon. Use only the PLAYER-KNOWN CONTEXT below. Never infer or reveal hidden NPC motives, hidden world facts, undiscovered clues, secret identities, future scripted events, numeric mechanics, or objective probabilities. A hint may remind the player of known information and suggest reasonable approaches; it must not identify a single "correct" path unless the known situation genuinely leaves only one.
 
@@ -692,7 +899,7 @@ HINT STYLE:
 ${styleRules[style]||styleRules.gentle}
 
 PLAYER-KNOWN CONTEXT:
-${JSON.stringify(playerFacingHintContext(),null,2)}`;
+${JSON.stringify(playerFacingHintContext())}`;
   }
 
   async function requestHint(){
@@ -707,7 +914,7 @@ ${JSON.stringify(playerFacingHintContext(),null,2)}`;
       if(state.turn!==turnBefore||state.revision!==revisionBefore) throw new Error("World state changed while the hint was being prepared.");
       addMessage("hint",api.data.message);
       addEvent("hint_requested",{style,turn:state.turn,revision:state.revision,model:api.model,ai_profile:api.ai_profile});
-      addDebug({phase:"hint",style,model:api.model,ai_profile:api.ai_profile,request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,state_changed:false});
+      addDebug({phase:"hint",style,model:api.model,ai_profile:api.ai_profile,request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,request_metrics:api.request_metrics,state_changed:false});
       persist();
     }catch(e){
       addMessage("system","Hint request failed without changing world state: "+e.message);
@@ -716,7 +923,7 @@ ${JSON.stringify(playerFacingHintContext(),null,2)}`;
   }
 
   function compilerPrompt(form){
-    return `UNIVERSAL RPG CAMPAIGN COMPILER — v0.4.2
+    return `UNIVERSAL RPG CAMPAIGN COMPILER — v0.4.3
 
 Compile the user's campaign request into a compact playable starting state plus a hidden scenario framework. The output structure is enforced by the API schema; focus on correct content rather than explaining the schema.
 
@@ -751,12 +958,12 @@ Scenario framework rules:
 Create meaningful agency, but do not confuse agency with a motionless world. NPCs and scenario developments continue to exist and can act independently.
 
 USER REQUEST:
-${JSON.stringify(form,null,2)}`;
+${JSON.stringify(form)}`;
   }
 
   function adjudicationPrompt(playerText,reviewTier="routine"){
     const pending=state.pending_action?JSON.stringify({intent_summary:state.pending_action.intent_summary,original_text:state.pending_action.original_text,assessment_message:state.pending_action.assessment_message},null,2):"NONE";
-    return `UNIVERSAL RPG — INTENT & ADJUDICATION PHASE v0.4.2
+    return `UNIVERSAL RPG — INTENT & ADJUDICATION PHASE v0.4.3
 
 Classify the player's message before resolving anything. The player may be asking for clarification, asking for a risk assessment, proposing/committing to an action, examining something in-world, communicating, or speaking meta-game.
 
@@ -817,7 +1024,7 @@ Output discipline:
 - Never expose numeric mechanics or hidden facts in narration.
 
 AUTHORITATIVE STATE:
-${JSON.stringify(currentContext(),null,2)}
+${JSON.stringify(adjudicationContext(playerText))}
 
 PENDING ACTION:
 ${pending}
@@ -827,7 +1034,7 @@ ${playerText}`;
   }
 
   function assessmentPrompt(playerText,adj,preview,requiresConfirmation){
-    return `UNIVERSAL RPG — PLAYER-FACING ASSESSMENT v0.4.2
+    return `UNIVERSAL RPG — PLAYER-FACING ASSESSMENT v0.4.3
 
 Give the player a concise, natural referee assessment before any action is resolved. Use only the CHARACTER-KNOWN assessment data below. Do not reveal numeric probabilities, hidden factors, hidden statistics, objective difficulty, or hidden scenario anchors. Explain the important visible reasons in ordinary language.
 
@@ -843,13 +1050,17 @@ INTENT:
 ${adj.intent_summary}
 
 CHARACTER-KNOWN ASSESSMENT:
-${JSON.stringify({likelihood_band:preview.display_likelihood_band,confidence:adj.assessment.confidence,favorable_factors:adj.assessment.perceived_factors.filter(f=>f.impact.includes("advantage")),unfavorable_factors:adj.assessment.perceived_factors.filter(f=>f.impact.includes("hindrance")),apparent_success_stakes:adj.assessment.apparent_success_stakes,apparent_failure_stakes:adj.assessment.apparent_failure_stakes,uncertainty_note:adj.assessment.uncertainty_note},null,2)}
+${JSON.stringify({likelihood_band:preview.display_likelihood_band,confidence:adj.assessment.confidence,favorable_factors:adj.assessment.perceived_factors.filter(f=>f.impact.includes("advantage")),unfavorable_factors:adj.assessment.perceived_factors.filter(f=>f.impact.includes("hindrance")),apparent_success_stakes:adj.assessment.apparent_success_stakes,apparent_failure_stakes:adj.assessment.apparent_failure_stakes,uncertainty_note:adj.assessment.uncertainty_note})}
 
 requires_confirmation: ${requiresConfirmation}`;
   }
 
+  function compactAdjudicationForOutcome(adj){
+    return {intent_summary:adj?.intent_summary||"",intent_type:adj?.intent_type||"",action_kind:adj?.action_kind||"other",reason:compactText(adj?.reason,650),capability_name:adj?.capability_name||"",capability_level:adj?.capability_level||"none",difficulty:adj?.difficulty||"none",factors:(adj?.factors||[]).slice(0,8),stakes:adj?.stakes||{success:"",failure:""},time_cost_hint:compactText(adj?.time_cost_hint,350),complexity:adj?.complexity||"routine"};
+  }
+
   function outcomePrompt(playerText,adjudication,resolution){
-    return `UNIVERSAL RPG — OUTCOME & NARRATION PHASE v0.4.2
+    return `UNIVERSAL RPG — OUTCOME & NARRATION PHASE v0.4.3
 
 The resolution engine has already fixed the action outcome. It may be deterministic or probabilistic. Accept the supplied result exactly. Do not reroll it, reverse it, or alter its stated magnitude. Probabilistic magnitude may be marginal_success, solid_success, strong_success, exceptional_success, marginal_failure, failure, severe_failure, or exceptional_failure. Treat magnitude as degree/quality of the resolved result, not permission to invent unrelated consequences.
 
@@ -858,20 +1069,20 @@ Narrate the consequence naturally in the established tone. Do not reveal numeric
 Provide only state updates causally implied by this result. Do not alter campaign foundation. New facts must obey generation constraints and may not contradict established canon. Reconcile state when the result makes an old fact obsolete or resolves/fails an open thread. In source-guided campaigns, compatible active/eligible scenario anchors may inform what meaningful discovery or encounter results, but never override the fixed engine result or force a player choice.
 
 AUTHORITATIVE STATE:
-${JSON.stringify(currentContext(),null,2)}
+${JSON.stringify(outcomeContext(playerText,adjudication))}
 
 PLAYER ACTION:
 ${playerText}
 
 ADJUDICATION:
-${JSON.stringify(adjudication,null,2)}
+${JSON.stringify(compactAdjudicationForOutcome(adjudication))}
 
 ENGINE RESULT:
-${JSON.stringify(resolution,null,2)}`;
+${JSON.stringify(resolution)}`;
   }
 
   function scenarioRepairPrompt(){
-    return `UNIVERSAL RPG — SCENARIO FRAMEWORK BOOTSTRAP v0.4.2
+    return `UNIVERSAL RPG — SCENARIO FRAMEWORK BOOTSTRAP v0.4.3
 
 Build a scenario framework for an existing migrated campaign that predates scenario anchors. Do NOT rewrite established campaign/world state. Do NOT retroactively assert that undiscovered events already happened. Use the campaign's existing source_mode as binding unless a preserved creation_request explicitly records a different selected source_mode.
 
@@ -886,15 +1097,14 @@ Create 3-8 future/current anchors that can move play beyond the present scene. D
 Set director.needs_bootstrap=false. Preserve current turn/place in the director bookkeeping fields.
 
 PRESERVED CREATION REQUEST (may be null):
-${JSON.stringify(state.creation_request,null,2)}
+${JSON.stringify(state.creation_request)}
 
 AUTHORITATIVE CURRENT STATE:
-${JSON.stringify(currentContext(),null,2)}`;
+${JSON.stringify(scenarioBootstrapContext())}`;
   }
 
   function directorPrompt(trigger){
-    const compactNpcs=(state.npcs||[]).filter(n=>n.status!=="removed").map(n=>({id:n.id,name:n.name,status:n.status,public:n.public,hidden:{goals:n.hidden?.goals||[],knowledge:n.hidden?.knowledge||[],loyalties:n.hidden?.loyalties||[],fears:n.hidden?.fears||[],current_intention:n.hidden?.current_intention||""}}));
-    return `UNIVERSAL RPG — ADVENTURE DIRECTOR v0.4.2
+    return `UNIVERSAL RPG — ADVENTURE DIRECTOR v0.4.3
 
 You are not resolving the player's just-completed action; that result is already committed. Decide whether the world should now advance on the SAME turn through an eligible scenario anchor, autonomous NPC initiative, scene transition, thread reconciliation, or a causally justified remote development.
 
@@ -911,10 +1121,10 @@ Director principles:
 - No probability roll occurs here. This is world progression, not character task resolution.
 
 DIRECTOR TRIGGER:
-${JSON.stringify(trigger,null,2)}
+${JSON.stringify(trigger)}
 
-CAMPAIGN:
-${JSON.stringify({campaign:state.campaign,scenario:state.scenario,world:state.world,threads:state.threads,npcs:compactNpcs,turn:state.turn,revision:state.revision,recent_events:(state.event_log||[]).slice(-10)},null,2)}`;
+DIRECTOR CONTEXT:
+${JSON.stringify(directorContext(trigger))}`;
   }
 
   function clamp(n,min,max){ return Math.max(min,Math.min(max,n)); }
@@ -1177,7 +1387,7 @@ ${JSON.stringify({campaign:state.campaign,scenario:state.scenario,world:state.wo
       state.campaign=compiled.campaign; state.player=compiled.player; state.world=compiled.world; state.npcs=compiled.npcs; state.threads=compiled.threads; state.scenario=compiled.scenario;
       addMessage("narrator",compiled.opening_narration);
       addEvent("campaign_compiled",{campaign:state.campaign.title,npc_count:state.npcs.length,thread_count:state.threads.length,anchor_count:(state.scenario?.anchors||[]).length,requested_source_mode:form.source_mode,model_source_mode:modelSourceMode,locked_source_mode:state.campaign.source_mode,gateway_version:api.gateway_version});
-      addDebug({phase:"campaign_compile",model:api.model,ai_profile:api.ai_profile,request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,structured:true});
+      addDebug({phase:"campaign_compile",model:api.model,ai_profile:api.ai_profile,request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,request_metrics:api.request_metrics,structured:true});
       persist(); el.campaignDialog.close();
     }catch(e){ alert("Campaign creation failed: "+e.message); setStatus("bad","Campaign creation failed"); }
     finally{setBusy(false);}
@@ -1213,7 +1423,7 @@ ${JSON.stringify({campaign:state.campaign,scenario:state.scenario,world:state.wo
     state.scenario=repaired;
     state.revision+=1;
     addEvent("scenario_framework_bootstrapped",{source_mode:state.campaign.source_mode,anchor_count:repaired.anchors.length,model:api.model});
-    addDebug({phase:"scenario_bootstrap",model:api.model,ai_profile:api.ai_profile,request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,anchor_count:repaired.anchors.length});
+    addDebug({phase:"scenario_bootstrap",model:api.model,ai_profile:api.ai_profile,request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,request_metrics:api.request_metrics,anchor_count:repaired.anchors.length});
   }
 
   function meaningfulDevelopment(summary={}){
@@ -1233,11 +1443,16 @@ ${JSON.stringify({campaign:state.campaign,scenario:state.scenario,world:state.wo
 
   function shouldRunAdventureDirector(adj,summary={}){
     if(!state.scenario||state.scenario.director?.needs_bootstrap) return false;
+    const d=state.scenario.director||{};
     const activeOrEligible=(state.scenario.anchors||[]).some(a=>["eligible","active"].includes(a.status)&&a.importance!=="optional");
     const sourcePending=state.scenario.mode==="source_guided"&&(state.scenario.anchors||[]).some(a=>a.status==="pending"&&a.importance!=="optional");
-    if(activeOrEligible||sourcePending) return true;
-    if((state.scenario.director?.turns_since_development||0)>=2) return true;
-    if(["travel","move"].includes(adj?.action_kind)&&!meaningfulDevelopment(summary)) return true;
+    if(activeOrEligible) return true;
+    if((d.turns_since_development||0)>=2) return true;
+    // Pending source anchors are checked when play actually changes the situation, or after a little pressure builds.
+    // This prevents a separate Director model call after every trivial action while still allowing the world to move.
+    if(sourcePending && meaningfulDevelopment(summary)) return true;
+    if(sourcePending && ["travel","move","observe","communicate","rest"].includes(adj?.action_kind) && (d.turns_since_development||0)>=1) return true;
+    if(["travel","move"].includes(adj?.action_kind)&&!meaningfulDevelopment(summary)&&(d.turns_since_development||0)>=1) return true;
     return false;
   }
 
@@ -1252,13 +1467,13 @@ ${JSON.stringify({campaign:state.campaign,scenario:state.scenario,world:state.wo
       const out=api.data;
       if(!out.should_advance){
         if(!updatesAreEmpty(out.updates)||(out.npc_actions||[]).length||String(out.narration||"").trim()) throw new Error("Director returned changes while should_advance=false.");
-        addDebug({phase:"director_noop",model:api.model,ai_profile:api.ai_profile,request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,reason:out.reason,trigger});
+        addDebug({phase:"director_noop",model:api.model,ai_profile:api.ai_profile,request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,request_metrics:api.request_metrics,reason:out.reason,trigger});
         return;
       }
       const updateResult=applyUpdates(out.updates);
       if(String(out.narration||"").trim()) addMessage("narrator",out.narration);
       addEvent("adventure_director",{development_type:out.development_type,reason:out.reason,development_summary:out.development_summary,updates:updateResult.summary,npc_actions:out.npc_actions});
-      addDebug({phase:"director",model:api.model,ai_profile:api.ai_profile,request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,development_type:out.development_type,development_summary:out.development_summary,updates:updateResult.summary});
+      addDebug({phase:"director",model:api.model,ai_profile:api.ai_profile,request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,request_metrics:api.request_metrics,development_type:out.development_type,development_summary:out.development_summary,updates:updateResult.summary});
       if(updateResult.applied||String(out.narration||"").trim()||(out.npc_actions||[]).length){
         state.scenario.director.turns_since_development=0;
         state.scenario.director.last_development_turn=state.turn;
@@ -1287,7 +1502,7 @@ ${JSON.stringify({campaign:state.campaign,scenario:state.scenario,world:state.wo
         const updateResult=applyUpdates(out.updates); primarySummary=updateResult.summary; consequenceSummary=out.consequence_summary||"";
         addMessage("narrator",out.narration||"The action resolves.");
         addEvent("deterministic_resolution",{intent:adj.intent_summary,intent_type:adj.intent_type,action_kind:adj.action_kind,outcome:adj.deterministic_outcome,reason:adj.reason,time_cost_hint:adj.time_cost_hint,updates:updateResult.summary,npc_actions:out.npc_actions,consequence_summary:out.consequence_summary});
-        addDebug({phase:"deterministic_narration",model:oApi.model,ai_profile:oApi.ai_profile,request_id:oApi.openai_request_id,response_id:oApi.response_id,usage:oApi.usage});
+        addDebug({phase:"deterministic_narration",model:oApi.model,ai_profile:oApi.ai_profile,request_id:oApi.openai_request_id,response_id:oApi.response_id,usage:oApi.usage,request_metrics:oApi.request_metrics});
       }else{
         const updateResult=applyUpdates(adj.updates); primarySummary=updateResult.summary;
         addMessage("narrator",adj.narration||"The action resolves.");
@@ -1306,7 +1521,7 @@ ${JSON.stringify({campaign:state.campaign,scenario:state.scenario,world:state.wo
     const updateResult=applyUpdates(out.updates); primarySummary=updateResult.summary; consequenceSummary=out.consequence_summary||"";
     addMessage("narrator",out.narration||(result.success?"You succeed.":"You fail."));
     addEvent("narrated_outcome",{success:result.success,magnitude:result.magnitude,consequence_summary:out.consequence_summary,updates:updateResult.summary,npc_actions:out.npc_actions});
-    addDebug({phase:"narration",model:oApi.model,ai_profile:oApi.ai_profile,request_id:oApi.openai_request_id,response_id:oApi.response_id,usage:oApi.usage});
+    addDebug({phase:"narration",model:oApi.model,ai_profile:oApi.ai_profile,request_id:oApi.openai_request_id,response_id:oApi.response_id,usage:oApi.usage,request_metrics:oApi.request_metrics});
     await runAdventureDirector(adj,primarySummary,consequenceSummary);
   }
 
@@ -1358,7 +1573,7 @@ ${JSON.stringify({campaign:state.campaign,scenario:state.scenario,world:state.wo
 
       let aApi=await callWorker(adjudicationPrompt(text,"routine"),"adjudicate");
       let adj=aApi.data;
-      addDebug({phase:"adjudication",model:aApi.model,ai_profile:aApi.ai_profile,request_id:aApi.openai_request_id,response_id:aApi.response_id,usage:aApi.usage,adjudication:adj,pending_before:before.pending_action?.intent_summary||null});
+      addDebug({phase:"adjudication",model:aApi.model,ai_profile:aApi.ai_profile,request_id:aApi.openai_request_id,response_id:aApi.response_id,usage:aApi.usage,request_metrics:aApi.request_metrics,adjudication:adj,pending_before:before.pending_action?.intent_summary||null});
 
       // Tiered referee routing: routine Sol/Low -> significant Sol/Medium -> exceptional Astra/High.
       // The first pass is cheap and is final for ordinary play. Important NPC/social/hidden-state
@@ -1369,7 +1584,7 @@ ${JSON.stringify({campaign:state.campaign,scenario:state.scenario,world:state.wo
         const mediumApi=await callWorker(adjudicationPrompt(text,"medium"),"adjudicate","adjudicate_medium");
         adj=mediumApi.data;
         aApi=mediumApi;
-        addDebug({phase:"adjudication_medium",model:aApi.model,ai_profile:aApi.ai_profile,request_id:aApi.openai_request_id,response_id:aApi.response_id,usage:aApi.usage,adjudication:adj,pending_before:before.pending_action?.intent_summary||null});
+        addDebug({phase:"adjudication_medium",model:aApi.model,ai_profile:aApi.ai_profile,request_id:aApi.openai_request_id,response_id:aApi.response_id,usage:aApi.usage,request_metrics:aApi.request_metrics,adjudication:adj,pending_before:before.pending_action?.intent_summary||null});
       }
 
       if(adj.complexity==="exceptional" || adj.escalation_recommended){
@@ -1378,7 +1593,7 @@ ${JSON.stringify({campaign:state.campaign,scenario:state.scenario,world:state.wo
         const escalatedApi=await callWorker(adjudicationPrompt(text,"astra"),"adjudicate","adjudicate_complex");
         adj=escalatedApi.data;
         aApi=escalatedApi;
-        addDebug({phase:"adjudication_escalated",model:aApi.model,ai_profile:aApi.ai_profile,request_id:aApi.openai_request_id,response_id:aApi.response_id,usage:aApi.usage,adjudication:adj,pending_before:before.pending_action?.intent_summary||null});
+        addDebug({phase:"adjudication_escalated",model:aApi.model,ai_profile:aApi.ai_profile,request_id:aApi.openai_request_id,response_id:aApi.response_id,usage:aApi.usage,request_metrics:aApi.request_metrics,adjudication:adj,pending_before:before.pending_action?.intent_summary||null});
       }
 
       if(state.pending_action){
@@ -1397,7 +1612,7 @@ ${JSON.stringify({campaign:state.campaign,scenario:state.scenario,world:state.wo
         if(adj.pending_disposition==="keep"){
           assertNonTurnOutput(adj);
           if(adj.intent_type==="assess" && adj.resolution_required){
-            const a=await makeAssessmentMessage(text,adj,false); addMessage("narrator",a.message); addDebug({phase:"assessment",model:a.api.model,ai_profile:a.api.ai_profile,preview:a.preview,request_id:a.api.openai_request_id,usage:a.api.usage});
+            const a=await makeAssessmentMessage(text,adj,false); addMessage("narrator",a.message); addDebug({phase:"assessment",model:a.api.model,ai_profile:a.api.ai_profile,preview:a.preview,request_id:a.api.openai_request_id,usage:a.api.usage,request_metrics:a.api.request_metrics});
           }else addMessage("narrator",adj.narration||"The referee clarifies the situation.");
           persist(); return;
         }
@@ -1418,7 +1633,7 @@ ${JSON.stringify({campaign:state.campaign,scenario:state.scenario,world:state.wo
         const a=await makeAssessmentMessage(text,adj,false);
         addMessage("narrator",a.message);
         addEvent("assessment_only",{intent:adj.intent_summary,preview_band:a.preview.display_likelihood_band,confidence:adj.assessment.confidence});
-        addDebug({phase:"assessment",model:a.api.model,ai_profile:a.api.ai_profile,preview:a.preview,request_id:a.api.openai_request_id,usage:a.api.usage});
+        addDebug({phase:"assessment",model:a.api.model,ai_profile:a.api.ai_profile,preview:a.preview,request_id:a.api.openai_request_id,usage:a.api.usage,request_metrics:a.api.request_metrics});
         persist(); return;
       }
 
@@ -1438,7 +1653,7 @@ ${JSON.stringify({campaign:state.campaign,scenario:state.scenario,world:state.wo
         };
         addMessage("narrator",a.message);
         addEvent("pending_action_created",{intent:adj.intent_summary,action_kind:adj.action_kind,perceived_likelihood:a.preview.display_likelihood_band,meaningful_consequence:adj.meaningful_consequence});
-        addDebug({phase:"assessment_checkpoint",model:a.api.model,ai_profile:a.api.ai_profile,preview:a.preview,request_id:a.api.openai_request_id,usage:a.api.usage});
+        addDebug({phase:"assessment_checkpoint",model:a.api.model,ai_profile:a.api.ai_profile,preview:a.preview,request_id:a.api.openai_request_id,usage:a.api.usage,request_metrics:a.api.request_metrics});
         persist(); return;
       }
 
@@ -1480,6 +1695,14 @@ ${JSON.stringify({campaign:state.campaign,scenario:state.scenario,world:state.wo
     }
   }
 
+  function requestSizeSummary(){
+    const rows=(state.debug_log||[]).map(d=>d.request_metrics).filter(Boolean).slice(-50);
+    if(!rows.length) return {samples:0};
+    const avg=(key)=>Math.round(rows.reduce((sum,r)=>sum+(Number(r[key])||0),0)/rows.length);
+    const max=(key)=>Math.max(...rows.map(r=>Number(r[key])||0));
+    return {samples:rows.length,average_input_chars:avg("input_chars"),max_input_chars:max("input_chars"),average_schema_chars:avg("schema_chars"),average_approximate_input_tokens:avg("approximate_input_tokens"),max_approximate_input_tokens:max("approximate_input_tokens")};
+  }
+
   async function exportDebug(){
     if(!confirm("Debug export includes hidden NPC/world information, transcript, event/debug logs, and internal probability records. It never includes your GAME_TOKEN or OpenAI API key. Continue?")) return;
     const previousBusy=busy;
@@ -1499,7 +1722,9 @@ ${JSON.stringify({campaign:state.campaign,scenario:state.scenario,world:state.wo
         scenario:{mode:state.scenario?.mode||null,needs_bootstrap:state.scenario?.director?.needs_bootstrap===true,turns_since_development:state.scenario?.director?.turns_since_development||0,active_or_eligible:(state.scenario?.anchors||[]).filter(a=>["active","eligible"].includes(a.status)).map(a=>a.id)},
         connection:{worker:worker(),game_token_present:!!token(),game_token_persisted:!!localStorage.getItem(TOKEN_KEY),gateway_health:health},
         browser:{user_agent:navigator.userAgent,language:navigator.language,platform:navigator.platform,on_line:navigator.onLine,viewport:{width:window.innerWidth,height:window.innerHeight},timezone:Intl.DateTimeFormat().resolvedOptions().timeZone||null},
-        ai_profiles:AI_PROFILES
+        ai_profiles:AI_PROFILES,
+        context_policy:CONTEXT_POLICY,
+        request_size_summary:requestSizeSummary()
       };
       exportJson(`universal-rpg-debug-turn-${state.turn}-${new Date().toISOString().replace(/[:.]/g,"-")}.json`,{
         exported_at:now(),
