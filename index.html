@@ -45,7 +45,7 @@
 <body>
 <div class="app" id="app">
   <header>
-    <div class="brand">Universal RPG</div><div class="version">v0.1</div>
+    <div class="brand">Universal RPG</div><div class="version">v0.2</div>
     <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Not connected</span></div>
     <div class="spacer"></div>
     <button class="btn small" id="newBtn">New Campaign</button>
@@ -111,8 +111,10 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "0.1.0";
-  const STATE_KEY = "universalRpg.state.v0_1";
+  const APP_VERSION = "0.2.0";
+  const SCHEMA_VERSION = 2;
+  const STATE_KEY = "universalRpg.state.v0_2";
+  const LEGACY_STATE_KEY = "universalRpg.state.v0_1";
   const WORKER_KEY = "universalRpg.workerUrl";
   const TOKEN_KEY = "universalRpg.gameToken";
   const DEFAULT_WORKER = "https://universal-rpg.diabolicdonut.workers.dev";
@@ -135,38 +137,101 @@
     workerUrl:$("workerUrl"), gameToken:$("gameToken"), rememberToken:$("rememberToken"), importFile:$("importFile")
   };
 
+  function deepClone(value){ return typeof structuredClone === "function" ? structuredClone(value) : JSON.parse(JSON.stringify(value)); }
+  function now(){ return new Date().toISOString(); }
+  function titleCase(s=""){ return String(s).replace(/_/g," ").replace(/\b\w/g,c=>c.toUpperCase()); }
+
   function newBaseState(){
     return {
-      schema_version:1, app_version:APP_VERSION, created_at:new Date().toISOString(), updated_at:new Date().toISOString(), turn:0,
-      campaign:null, player:null, world:null, npcs:[], threads:[], transcript:[], event_log:[], debug_log:[]
+      schema_version:SCHEMA_VERSION,
+      app_version:APP_VERSION,
+      created_at:now(),
+      updated_at:now(),
+      turn:0,
+      campaign:null,
+      player:null,
+      world:null,
+      npcs:[],
+      threads:[],
+      clocks:[],
+      transcript:[],
+      event_log:[],
+      debug_log:[]
     };
   }
 
+  function migrateState(raw){
+    if(!raw || typeof raw !== "object") return newBaseState();
+    if(raw.schema_version === SCHEMA_VERSION){
+      raw.app_version = APP_VERSION;
+      raw.clocks = Array.isArray(raw.clocks) ? raw.clocks : [];
+      return raw;
+    }
+    if(raw.schema_version === 1){
+      const migrated = {...raw, schema_version:SCHEMA_VERSION, app_version:APP_VERSION, clocks:Array.isArray(raw.clocks)?raw.clocks:[]};
+      if(migrated.player){
+        migrated.player.id ||= "pc_1";
+        migrated.player.knowledge ||= [];
+        for(const c of migrated.player.public_capabilities||[]){
+          c.level = String(c.level||"competent").toLowerCase();
+          c.description ||= "";
+          c.tags ||= [];
+        }
+        for(const c of migrated.player.hidden_capabilities||[]){ c.description ||= ""; c.tags ||= []; }
+      }
+      if(migrated.world?.current_place){
+        const p=migrated.world.current_place;
+        if(p.hidden){ p.hidden_facts ||= p.hidden.facts||[]; p.generation_constraints ||= p.hidden.generation_constraints||[]; delete p.hidden; }
+        p.hidden_facts ||= []; p.generation_constraints ||= [];
+        migrated.world.known_places ||= [];
+        migrated.world.resources = Array.isArray(migrated.world.resources) ? migrated.world.resources : [];
+        migrated.world.facts ||= [];
+      }
+      for(const n of migrated.npcs||[]){
+        n.capabilities ||= [];
+        n.hidden ||= {};
+        n.hidden.nature ||= "Unknown";
+        n.hidden.goals ||= [];
+        n.hidden.knowledge ||= [];
+        n.hidden.loyalties ||= [];
+        n.hidden.fears ||= [];
+        n.hidden.secrets ||= [];
+        n.hidden.temperament ||= "Unspecified";
+        n.hidden.current_intention ||= "Continue current priorities.";
+        n.hidden.relationship ||= {trust:"Unspecified",affection:"Unspecified",authority:"None",obligation:"None"};
+      }
+      return migrated;
+    }
+    return newBaseState();
+  }
+
   function loadState(){
-    try { const raw = localStorage.getItem(STATE_KEY); return raw ? JSON.parse(raw) : newBaseState(); }
-    catch { return newBaseState(); }
+    try{
+      const current=localStorage.getItem(STATE_KEY);
+      if(current) return migrateState(JSON.parse(current));
+      const legacy=localStorage.getItem(LEGACY_STATE_KEY);
+      if(legacy) return migrateState(JSON.parse(legacy));
+    }catch{}
+    return newBaseState();
   }
 
   function persist(){
-    state.updated_at = new Date().toISOString();
-    localStorage.setItem(STATE_KEY, JSON.stringify(state));
+    state.updated_at=now();
+    state.app_version=APP_VERSION;
+    state.schema_version=SCHEMA_VERSION;
+    localStorage.setItem(STATE_KEY,JSON.stringify(state));
     render();
   }
 
   function token(){ return sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || ""; }
   function worker(){ return (localStorage.getItem(WORKER_KEY) || DEFAULT_WORKER).replace(/\/$/,""); }
-
-  function setStatus(kind,text){ el.statusDot.className = "dot" + (kind ? " "+kind : ""); el.statusText.textContent=text; }
-  function setBusy(v, text="Working..."){ busy=v; el.app.classList.toggle("busy",v); if(v) setStatus("",text); else setStatus(token()?"good":"","Ready"); }
-
+  function setStatus(kind,text){ el.statusDot.className="dot"+(kind?" "+kind:""); el.statusText.textContent=text; }
+  function setBusy(v,text="Working..."){ busy=v; el.app.classList.toggle("busy",v); if(v) setStatus("",text); else setStatus(token()?"good":"",token()?"Ready":"Token required"); }
   function escapeHtml(s=""){ return String(s).replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c])); }
-
-  function formatText(text=""){
-    return escapeHtml(text).split(/\n\n+/).map(p=>`<p>${p.replace(/\n/g,"<br>")}</p>`).join("");
-  }
+  function formatText(text=""){ return escapeHtml(text).split(/\n\n+/).map(p=>`<p>${p.replace(/\n/g,"<br>")}</p>`).join(""); }
 
   function render(){
-    const active = !!state.campaign;
+    const active=!!state.campaign;
     el.empty.classList.toggle("hidden",active);
     el.composer.classList.toggle("hidden",!active);
     renderSidebar(); renderTranscript();
@@ -174,213 +239,238 @@
   }
 
   function renderSidebar(){
-    if(!state.campaign){ el.sidebar.innerHTML = `<div class="card"><h3>Universal RPG</h3><div class="kv">No active campaign.</div></div>`; return; }
-    const caps=(state.player?.public_capabilities||[]).map(x=>`<span class="tag">${escapeHtml(x.name)} · ${escapeHtml(x.level)}</span>`).join("");
-    const npcs=(state.npcs||[]).filter(n=>n.status!=="removed").map(n=>`<div class="kv" style="margin:7px 0"><strong>${escapeHtml(n.name||"Unknown")}</strong><br><span class="label">${escapeHtml(n.public?.relationship||n.public?.role||"")}</span></div>`).join("") || `<div class="kv label">None currently known.</div>`;
-    const threads=(state.threads||[]).filter(t=>t.visibility!=="hidden" && t.status!=="closed").map(t=>`<div class="kv" style="margin:7px 0">• ${escapeHtml(t.label||t.name||"Open situation")}</div>`).join("") || `<div class="kv label">No active threads.</div>`;
-    const place=state.world?.current_place?.name || "Unknown";
-    const time=state.world?.time_label || "Unspecified";
-    el.sidebar.innerHTML = `
+    if(!state.campaign){ el.sidebar.innerHTML=`<div class="card"><h3>Universal RPG</h3><div class="kv">No active campaign.</div></div>`; return; }
+    const caps=(state.player?.public_capabilities||[]).map(x=>`<span class="tag">${escapeHtml(x.name)} · ${escapeHtml(titleCase(x.level))}</span>`).join("");
+    const npcs=(state.npcs||[]).filter(n=>n.status!=="removed").map(n=>`<div class="kv" style="margin:7px 0"><strong>${escapeHtml(n.name||"Unknown")}</strong><br><span class="label">${escapeHtml(n.public?.relationship||n.public?.role||"")}</span></div>`).join("")||`<div class="kv label">None currently known.</div>`;
+    const threads=(state.threads||[]).filter(t=>t.visibility!=="hidden"&&t.status==="open").map(t=>`<div class="kv" style="margin:7px 0">• ${escapeHtml(t.label||"Open situation")}</div>`).join("")||`<div class="kv label">No active threads.</div>`;
+    const knowledge=(state.player?.knowledge||[]).slice(-5).map(k=>`<div class="kv" style="margin:6px 0">• ${escapeHtml(k.text)} <span class="label">(${escapeHtml(k.confidence)})</span></div>`).join("")||`<div class="kv label">Nothing notable recorded.</div>`;
+    const place=state.world?.current_place?.name||"Unknown";
+    const time=state.world?.time_label||"Unspecified";
+    el.sidebar.innerHTML=`
       <div class="card"><h3>Campaign</h3><div class="kv"><strong>${escapeHtml(state.campaign.title||"Untitled")}</strong><br><span class="label">${escapeHtml(state.campaign.genre||"")}</span><br><span class="label">${escapeHtml(place)} · ${escapeHtml(time)}</span></div></div>
       <div class="card"><h3>Persona</h3><div class="kv"><strong>${escapeHtml(state.player?.name||"Unnamed")}</strong><br>${escapeHtml(state.player?.concept||"")}<br><span class="label">${escapeHtml(state.player?.condition||"")}</span></div><div class="tags" style="margin-top:9px">${caps}</div></div>
       <div class="card"><h3>Companions & NPCs</h3>${npcs}</div>
       <div class="card"><h3>Open Situations</h3>${threads}</div>
-      <div class="card"><h3>Session</h3><div class="kv"><span class="label">Turn</span> ${state.turn}</div><details><summary>Developer snapshot</summary><div class="debug">${escapeHtml(JSON.stringify({turn:state.turn,place:state.world?.current_place?.id,npcs:(state.npcs||[]).length,threads:(state.threads||[]).length},null,2))}</div></details></div>`;
+      <div class="card"><h3>Known</h3>${knowledge}</div>
+      <div class="card"><h3>Session</h3><div class="kv"><span class="label">Turn</span> ${state.turn}</div><details><summary>Developer snapshot</summary><div class="debug">${escapeHtml(JSON.stringify({schema:state.schema_version,turn:state.turn,place:state.world?.current_place?.id,npcs:(state.npcs||[]).length,threads:(state.threads||[]).length,facts:(state.world?.facts||[]).length},null,2))}</div></details></div>`;
   }
 
   function renderTranscript(){
     if(!state.campaign) return;
     const messages=(state.transcript||[]).map(m=>`<div class="message ${escapeHtml(m.role)}"><div class="who">${m.role==="player"?"You":m.role==="system"?"System":"Referee"}</div>${formatText(m.text)}</div>`).join("");
-    el.transcript.innerHTML = messages || `<div class="message system"><p>The campaign is ready.</p></div>`;
-    requestAnimationFrame(()=>{ el.transcript.scrollTop=el.transcript.scrollHeight; });
+    el.transcript.innerHTML=messages||`<div class="message system"><p>The campaign is ready.</p></div>`;
+    requestAnimationFrame(()=>{el.transcript.scrollTop=el.transcript.scrollHeight;});
   }
 
-  function addMessage(role,text){ state.transcript.push({role,text,at:new Date().toISOString(),turn:state.turn}); }
-  function addEvent(type,data){ state.event_log.push({id:crypto.randomUUID(),turn:state.turn,at:new Date().toISOString(),type,data}); if(state.event_log.length>500) state.event_log.shift(); }
-  function addDebug(entry){ state.debug_log.push({at:new Date().toISOString(),turn:state.turn,...entry}); if(state.debug_log.length>200) state.debug_log.shift(); lastDebug=entry; }
+  function addMessage(role,text){ state.transcript.push({role,text,at:now(),turn:state.turn}); }
+  function addEvent(type,data){ state.event_log.push({id:crypto.randomUUID(),turn:state.turn,at:now(),type,data}); if(state.event_log.length>700) state.event_log.shift(); }
+  function addDebug(entry){ state.debug_log.push({at:now(),turn:state.turn,...entry}); if(state.debug_log.length>300) state.debug_log.shift(); lastDebug=entry; }
 
-  async function callWorker(input){
+  async function callWorker(input,mode="plain"){
     if(!token()) throw new Error("Game token is not configured. Open Settings first.");
-    const r = await fetch(worker()+"/api/turn",{method:"POST",headers:{"Content-Type":"application/json","Authorization":`Bearer ${token()}`},body:JSON.stringify({input})});
-    const data = await r.json().catch(()=>null);
-    if(!r.ok || !data?.ok) throw new Error(data?.detail || data?.error || `Worker request failed (${r.status})`);
+    let r;
+    try{
+      r=await fetch(worker()+"/api/turn",{method:"POST",headers:{"Content-Type":"application/json","Authorization":`Bearer ${token()}`},body:JSON.stringify({input,mode})});
+    }catch(e){
+      throw new Error("Network request failed before the Worker returned a response. Check ALLOWED_ORIGINS/CORS, the Worker URL, and your connection. Browser detail: "+e.message);
+    }
+    const data=await r.json().catch(()=>null);
+    if(!r.ok||!data?.ok) throw new Error(data?.detail||data?.error||`Worker request failed (${r.status})`);
+    if(mode!=="plain"&&(!data.data||typeof data.data!=="object")) throw new Error(`Worker returned no structured data for mode ${mode}. Deploy Worker v0.2.0 or later.`);
     return data;
-  }
-
-  function parseJson(text){
-    let t=String(text||"").trim();
-    t=t.replace(/^```(?:json)?\s*/i,"").replace(/\s*```$/i,"").trim();
-    const first=t.indexOf("{"); const last=t.lastIndexOf("}"); if(first>=0 && last>first) t=t.slice(first,last+1);
-    return JSON.parse(t);
   }
 
   function currentContext(){
     return {
-      campaign:state.campaign, player:state.player, world:state.world, npcs:state.npcs, threads:state.threads,
-      recent_transcript:(state.transcript||[]).slice(-14), recent_events:(state.event_log||[]).slice(-16), turn:state.turn
+      campaign:state.campaign,
+      player:state.player,
+      world:state.world,
+      npcs:state.npcs,
+      threads:state.threads,
+      clocks:state.clocks,
+      recent_transcript:(state.transcript||[]).slice(-16),
+      recent_events:(state.event_log||[]).slice(-20),
+      turn:state.turn
     };
   }
 
   function compilerPrompt(form){
-    return `UNIVERSAL RPG CAMPAIGN COMPILER — INITIAL BUILD\n\nCreate a compact but playable campaign constitution and starting state from the user's request. The player controls exactly one protagonist. All other people and intelligent beings are autonomous NPCs with their own goals, knowledge and agency. Hidden NPC secrets are allowed only when genre/premise supports them; do not manufacture betrayal merely for drama.\n\nUse these capability levels only: untrained, novice, familiar, competent, skilled, expert, master, legendary. Player-facing capability levels should be title-cased versions.\n\nReturn VALID JSON ONLY. No markdown, no commentary.\n\nRequired schema:\n{
-  "campaign": {
-    "title":"string","genre":"string","premise":"string","tone":"string","era_technology":"string","source_mode":"Original|Canonical|Adaptive|Inspirational",
-    "foundation":["immutable setting/rules facts"],
-    "generation_constraints":{"allowed":["..."],"prohibited":["..."]}
-  },
-  "player": {
-    "name":"string","concept":"string","background":"string","condition":"string",
-    "public_capabilities":[{"name":"string","level":"Competent","description":"string"}],
-    "hidden_capabilities":[{"name":"string","level":"competent","tags":["string"]}],
-    "limitations":["string"],"inventory":[{"id":"item_x","name":"string","description":"string"}]
-  },
-  "world": {
-    "time_label":"string",
-    "current_place":{"id":"place_x","name":"string","public_description":"string","hidden":{"facts":["string"],"generation_constraints":["string"]}},
-    "known_places":[],"resources":{},"facts":[{"visibility":"public|hidden","text":"string"}]
-  },
-  "npcs":[{
-    "id":"npc_x","name":"string","status":"present|elsewhere",
-    "public":{"role":"string","relationship":"string","description":"string","known_traits":["string"]},
-    "hidden":{"nature":"string","goals":["string"],"knowledge":["string"],"loyalties":["string"],"secrets":["string"],"temperament":"string"}
-  }],
-  "threads":[{"id":"thread_x","label":"string","status":"open","visibility":"public|hidden"}],
-  "opening_narration":"string"
-}\n\nDo not expose hidden NPC information in opening_narration. Do not invent numerical probabilities. Keep the initial cast small (usually 0-3 important NPCs). Create a situation with room for player agency rather than a scripted plot.\n\nUSER REQUEST:\n${JSON.stringify(form,null,2)}`;
+    return `UNIVERSAL RPG CAMPAIGN COMPILER — v0.2\n\nCompile the user's campaign request into a compact playable starting state. The output structure is enforced by the API schema; focus on correct content rather than explaining the schema.\n\nCore rules:\n- One player, one persona. The player controls exactly the protagonist.\n- All other intelligent beings are autonomous NPCs with independent goals, knowledge, loyalties, fears, obligations, and intentions.\n- Hidden NPC secrets are allowed only when supported by genre, premise, or source material. Do not manufacture betrayal merely for drama.\n- Establish a small starting cast, usually 0-3 important NPCs.\n- Establish only enough world detail to begin play. Do not generate an encyclopedia.\n- Foundation facts are immutable campaign assumptions. Generation constraints define what future creation may or may not introduce.\n- If Source Mode is Canonical, prioritize fidelity to established source facts over invention. If exact source details are uncertain, avoid false precision rather than inventing them as canon.\n- Opening narration must contain only information the protagonist could reasonably perceive or know. Never reveal hidden NPC/world state.\n- Capabilities use only: untrained, novice, familiar, competent, skilled, expert, master, legendary.\n- IDs must be stable lowercase identifiers such as pc_will, npc_arthur, place_beach, fact_shipwreck.\n- Create a situation with meaningful agency rather than a scripted sequence.\n\nUSER REQUEST:\n${JSON.stringify(form,null,2)}`;
   }
 
   function adjudicationPrompt(playerText){
-    return `UNIVERSAL RPG — ADJUDICATION PHASE\n\nYou are deciding whether the player's declared action needs probabilistic resolution. Do NOT narrate a resolved random outcome yet.\n\nCore rule: only resolve probabilistically when BOTH (1) the outcome is genuinely uncertain and (2) the uncertainty has a meaningful consequence. Time pressure counts as a consequence. If success is effectively assured given enough time and nothing meaningful changes, do not roll; consume/acknowledge time and allow success. If the action is impossible under established reality, do not roll; return deterministic failure. Established facts are never rerolled.\n\nThe player controls only their protagonist. NPCs remain autonomous. Never expose hidden state in player-visible narration.\n\nIf resolution is needed, select the closest existing capability from player.hidden_capabilities. If none is relevant, use capability_level "untrained" and capability_name "Untrained". Use ONLY these difficulty bands: routine, easy, standard, difficult, formidable, extreme. Use ONLY these factor impacts: major_advantage, significant_advantage, minor_advantage, minor_hindrance, significant_hindrance, major_hindrance. Factors must come from established circumstances, not arbitrary drama.\n\nReturn VALID JSON ONLY:\n{
- "intent_summary":"string",
- "resolution_required":true,
- "deterministic_outcome":null,
- "reason":"string",
- "capability_name":"string or null",
- "capability_level":"untrained|novice|familiar|competent|skilled|expert|master|legendary|null",
- "difficulty":"routine|easy|standard|difficult|formidable|extreme|null",
- "factors":[{"label":"string","impact":"minor_advantage etc"}],
- "stakes":{"success":"string","failure":"string"},
- "narration":"Only if resolution_required is false; otherwise empty string",
- "state_changes":[]
-}\n\nIf no roll is needed set resolution_required false and deterministic_outcome to "success", "failure", or "none" as appropriate. Then provide narration and any state_changes.\n\nAllowed state change operations:\n{"op":"set","path":"world.time_label","value":...}\n{"op":"set","path":"world.current_place","value":...}\n{"op":"set","path":"player.condition","value":...}\n{"op":"append","path":"player.inventory","value":...}\n{"op":"append","path":"world.facts","value":...}\n{"op":"append","path":"npcs","value":...}\n{"op":"append","path":"threads","value":...}\n{"op":"set","path":"npcs.<id>.status","value":...}\nDo not alter campaign foundation.\n\nAUTHORITATIVE STATE:\n${JSON.stringify(currentContext(),null,2)}\n\nPLAYER ACTION:\n${playerText}`;
+    return `UNIVERSAL RPG — ADJUDICATION PHASE v0.2\n\nInterpret the player's declared action against the authoritative state. Do not resolve a random outcome yourself.\n\nResolution gate:\n1. Is the attempted outcome possible under established reality?\n2. Is the outcome genuinely uncertain?\n3. Would success versus failure produce a meaningful consequence? Time pressure, resource loss, exposure, injury, discovery, or changed relationships can count.\n\nOnly if both uncertainty and meaningful consequence exist should resolution_required be true. If success is effectively assured given enough time and nothing meaningful changes, resolve deterministically and account for time fictionally. If an action is impossible, resolve deterministic failure. Established facts are never rerolled.\n\nWhen resolution is required:\n- Choose the closest established protagonist capability. If none applies, use untrained.\n- Difficulty must be one of routine/easy/standard/difficult/formidable/extreme.\n- Circumstance factors must be established facts, not invented drama.\n- Do not make updates yet; the outcome phase will do that after the engine resolves the probability.\n- Leave narration empty.\n\nWhen no probability is required:\n- Provide player-visible narration.\n- Provide only causally necessary structured updates.\n- NPCs may act independently according to their state.\n\nNever expose hidden facts or numeric mechanics in player-visible narration.\n\nAUTHORITATIVE STATE:\n${JSON.stringify(currentContext(),null,2)}\n\nPLAYER ACTION:\n${playerText}`;
   }
 
-  function outcomePrompt(playerText, adjudication, resolution){
-    return `UNIVERSAL RPG — OUTCOME & NARRATION PHASE\n\nThe deterministic probability engine has already resolved the uncertain action. You MUST accept its result. Do not reroll, reverse, soften, or intensify it beyond the supplied magnitude and stakes. Do not reveal numeric probability, random sample, hidden stats, or hidden NPC information. Explain causes fictionally when relevant. NPCs remain autonomous.\n\nReturn VALID JSON ONLY:\n{
- "narration":"player-visible prose",
- "state_changes":[],
- "new_public_facts":[{"text":"string"}],
- "new_hidden_facts":[{"text":"string"}]
-}\nUse only the same state-change forms described below. Keep changes minimal and causally implied by the outcome.\nAllowed state changes:\n{"op":"set","path":"world.time_label","value":...}\n{"op":"set","path":"world.current_place","value":...}\n{"op":"set","path":"player.condition","value":...}\n{"op":"append","path":"player.inventory","value":...}\n{"op":"append","path":"world.facts","value":...}\n{"op":"append","path":"npcs","value":...}\n{"op":"append","path":"threads","value":...}\n{"op":"set","path":"npcs.<id>.status","value":...}\n\nAUTHORITATIVE STATE:\n${JSON.stringify(currentContext(),null,2)}\n\nPLAYER ACTION:\n${playerText}\n\nADJUDICATION:\n${JSON.stringify(adjudication,null,2)}\n\nENGINE RESULT:\n${JSON.stringify(resolution,null,2)}`;
+  function outcomePrompt(playerText,adjudication,resolution){
+    return `UNIVERSAL RPG — OUTCOME & NARRATION PHASE v0.2\n\nThe deterministic probability engine has already resolved the uncertain action. Accept the supplied result exactly. Do not reroll it, reverse it, or change ordinary/strong/exceptional magnitude.\n\nNarrate the consequence naturally in the established tone. Do not reveal numeric probability, random sample, hidden stats, private NPC reasoning, or hidden world information. Explain relevant causes fictionally. NPCs remain autonomous and may react according to their own state.\n\nProvide only state updates causally implied by this result. Do not alter campaign foundation. New facts must obey generation constraints and may not contradict established canon.\n\nAUTHORITATIVE STATE:\n${JSON.stringify(currentContext(),null,2)}\n\nPLAYER ACTION:\n${playerText}\n\nADJUDICATION:\n${JSON.stringify(adjudication,null,2)}\n\nENGINE RESULT:\n${JSON.stringify(resolution,null,2)}`;
   }
 
   function computeProbability(adj){
-    const cap = CAPABILITY[String(adj.capability_level||"untrained").toLowerCase()] ?? CAPABILITY.untrained;
-    let challenge = DIFFICULTY[String(adj.difficulty||"standard").toLowerCase()] ?? DIFFICULTY.standard;
+    const cap=CAPABILITY[String(adj.capability_level||"untrained").toLowerCase()]??CAPABILITY.untrained;
+    let challenge=DIFFICULTY[String(adj.difficulty||"standard").toLowerCase()]??DIFFICULTY.standard;
     const applied=[];
-    for(const f of adj.factors||[]){ const shift=FACTOR_SHIFT[f.impact]||0; challenge += shift; applied.push({...f,challenge_shift:shift}); }
+    for(const f of adj.factors||[]){ const shift=FACTOR_SHIFT[f.impact]||0; challenge+=shift; applied.push({...f,challenge_shift:shift}); }
     challenge=Math.max(0,Math.min(120,challenge));
     const diff=cap-challenge;
     let p=1/(1+Math.exp(-diff/14.5));
     p=Math.max(.005,Math.min(.995,p));
     const u32=crypto.getRandomValues(new Uint32Array(1))[0];
     const sample=u32/4294967296;
-    const success=sample < p;
-    const strength = success ? 1-(sample/p) : (sample-p)/(1-p);
-    const magnitude = strength>=.80 ? "exceptional" : strength>=.50 ? "strong" : "ordinary";
+    const success=sample<p;
+    const strength=success?1-(sample/p):(sample-p)/(1-p);
+    const magnitude=strength>=.80?"exceptional":strength>=.50?"strong":"ordinary";
     return {success,magnitude,probability:p,sample,capability_score:cap,challenge_score:challenge,difference:diff,applied_factors:applied};
   }
 
-  const SAFE_ROOTS = new Set(["player","world","npcs","threads"]);
-  function splitPath(path){ return String(path||"").split(".").filter(Boolean); }
-  function safePath(parts){ return parts.length && SAFE_ROOTS.has(parts[0]) && !parts.some(p=>["__proto__","prototype","constructor"].includes(p)); }
-  function resolvePath(parts, create=false){
-    let obj=state;
-    for(let i=0;i<parts.length-1;i++){
-      let key=parts[i];
-      if(parts[0]==="npcs" && i===1 && !/^\d+$/.test(key)){
-        const idx=state.npcs.findIndex(n=>n.id===key); if(idx<0) return null; key=String(idx); parts[i]=key;
-      }
-      if(obj[key] == null){ if(!create) return null; obj[key]={}; }
-      obj=obj[key];
+  function validateUniqueIds(items,label){
+    const seen=new Set();
+    for(const x of items||[]){
+      if(!x||typeof x.id!=="string"||!x.id.trim()) throw new Error(`${label} contains an item without a valid id.`);
+      if(seen.has(x.id)) throw new Error(`${label} contains duplicate id ${x.id}.`);
+      seen.add(x.id);
     }
-    return {obj,key:parts[parts.length-1]};
   }
 
-  function applyChanges(changes=[]){
-    const applied=[], rejected=[];
-    for(const ch of changes){
-      try{
-        const parts=splitPath(ch.path); if(!safePath(parts)) throw new Error("unsafe path");
-        const r=resolvePath(parts,ch.op==="set"); if(!r) throw new Error("path not found");
-        if(ch.op==="set"){ r.obj[r.key]=ch.value; applied.push(ch); }
-        else if(ch.op==="append"){
-          const arr=r.obj[r.key]; if(!Array.isArray(arr)) throw new Error("target is not array"); arr.push(ch.value); applied.push(ch);
-        } else throw new Error("unsupported op");
-      }catch(e){ rejected.push({...ch,error:e.message}); }
+  function validateCompiledCampaign(c){
+    if(!c||typeof c!=="object") throw new Error("Campaign compiler returned no campaign object.");
+    for(const key of ["campaign","player","world"]){ if(!c[key]||typeof c[key]!=="object") throw new Error(`Campaign compiler omitted ${key}.`); }
+    if(!Array.isArray(c.npcs)||!Array.isArray(c.threads)) throw new Error("Campaign compiler returned invalid NPC/thread collections.");
+    if(typeof c.opening_narration!=="string"||!c.opening_narration.trim()) throw new Error("Campaign compiler omitted opening narration.");
+    validateUniqueIds(c.npcs,"NPCs"); validateUniqueIds(c.threads,"Threads");
+    validateUniqueIds(c.world.known_places||[],"Known places");
+    if(c.world.current_place?.id && (c.world.known_places||[]).some(p=>p.id===c.world.current_place.id)===false){ c.world.known_places.push(deepClone(c.world.current_place)); }
+    return c;
+  }
+
+  function validateStateEnvelope(s){
+    if(!s||typeof s!=="object") throw new Error("Save is not an object.");
+    if(![1,2].includes(s.schema_version)) throw new Error("Unsupported Universal RPG save schema.");
+    if(s.campaign && (!s.player||!s.world)) throw new Error("Active campaign save is missing player or world state.");
+    return true;
+  }
+
+  function findNpc(draft,id){ return (draft.npcs||[]).find(n=>n.id===id); }
+  function findThread(draft,id){ return (draft.threads||[]).find(t=>t.id===id); }
+  function addUniqueById(arr,item,label){ if(arr.some(x=>x.id===item.id)) throw new Error(`${label} id ${item.id} already exists.`); arr.push(deepClone(item)); }
+
+  function applyUpdates(updates){
+    if(!updates||typeof updates!=="object") return {applied:false,summary:{}};
+    const draft=deepClone(state);
+    const summary={};
+    if(updates.time_label!==null){ draft.world.time_label=updates.time_label; summary.time_label=updates.time_label; }
+    if(updates.current_place!==null){
+      draft.world.current_place=deepClone(updates.current_place);
+      draft.world.known_places ||= [];
+      const idx=draft.world.known_places.findIndex(p=>p.id===updates.current_place.id);
+      if(idx>=0) draft.world.known_places[idx]=deepClone(updates.current_place); else draft.world.known_places.push(deepClone(updates.current_place));
+      summary.current_place=updates.current_place.id;
     }
-    return {applied,rejected};
+    if(updates.player_condition!==null){ draft.player.condition=updates.player_condition; summary.player_condition=updates.player_condition; }
+
+    draft.player.inventory ||= []; draft.player.knowledge ||= []; draft.world.facts ||= []; draft.world.known_places ||= []; draft.npcs ||= []; draft.threads ||= [];
+    for(const item of updates.inventory_additions||[]) addUniqueById(draft.player.inventory,item,"Inventory");
+    for(const k of updates.player_knowledge_additions||[]) addUniqueById(draft.player.knowledge,k,"Knowledge");
+    for(const f of updates.world_fact_additions||[]) addUniqueById(draft.world.facts,f,"World fact");
+    for(const p of updates.known_place_additions||[]){ const idx=draft.world.known_places.findIndex(x=>x.id===p.id); if(idx>=0) draft.world.known_places[idx]=deepClone(p); else draft.world.known_places.push(deepClone(p)); }
+    for(const n of updates.npc_additions||[]) addUniqueById(draft.npcs,n,"NPC");
+    for(const t of updates.thread_additions||[]) addUniqueById(draft.threads,t,"Thread");
+
+    for(const ch of updates.npc_status_changes||[]){ const n=findNpc(draft,ch.npc_id); if(!n) throw new Error(`Unknown NPC in status change: ${ch.npc_id}`); n.status=ch.status; }
+    for(const ch of updates.npc_relationship_changes||[]){
+      const n=findNpc(draft,ch.npc_id); if(!n) throw new Error(`Unknown NPC in relationship change: ${ch.npc_id}`);
+      n.public.relationship=ch.public_relationship;
+      n.hidden.relationship={trust:ch.trust,affection:ch.affection,authority:ch.authority,obligation:ch.obligation};
+    }
+    for(const ch of updates.npc_intention_changes||[]){ const n=findNpc(draft,ch.npc_id); if(!n) throw new Error(`Unknown NPC in intention change: ${ch.npc_id}`); n.hidden.current_intention=ch.current_intention; }
+    for(const ch of updates.thread_status_changes||[]){ const t=findThread(draft,ch.thread_id); if(!t) throw new Error(`Unknown thread in status change: ${ch.thread_id}`); t.status=ch.status; }
+
+    validateUniqueIds(draft.player.inventory,"Inventory"); validateUniqueIds(draft.player.knowledge,"Knowledge"); validateUniqueIds(draft.world.facts,"World facts"); validateUniqueIds(draft.world.known_places,"Known places"); validateUniqueIds(draft.npcs,"NPCs"); validateUniqueIds(draft.threads,"Threads");
+    state=draft;
+    summary.inventory_added=(updates.inventory_additions||[]).length;
+    summary.knowledge_added=(updates.player_knowledge_additions||[]).length;
+    summary.facts_added=(updates.world_fact_additions||[]).length;
+    summary.places_added=(updates.known_place_additions||[]).length;
+    summary.npcs_added=(updates.npc_additions||[]).length;
+    summary.threads_added=(updates.thread_additions||[]).length;
+    return {applied:true,summary};
   }
 
   async function createCampaign(){
-    const form={title:$("campaignTitle").value.trim(),genre:$("campaignGenre").value.trim(),premise:$("campaignPremise").value.trim(),tone:$("campaignTone").value.trim(),era_technology:$("campaignEra").value.trim(),source_mode:$("sourceMode").value,player_name:$("pcName").value.trim(),player_concept:$("pcConcept").value.trim(),source_notes:$("sourceNotes").value.trim()};
-    if(!form.genre || !form.premise || !form.player_concept){ alert("Please provide at least genre/setting, premise, and player character concept."); return; }
+    const form={
+      title:$("campaignTitle").value.trim(), genre:$("campaignGenre").value.trim(), premise:$("campaignPremise").value.trim(), tone:$("campaignTone").value.trim(),
+      era_technology:$("campaignEra").value.trim(), source_mode:$("sourceMode").value, player_name:$("pcName").value.trim(), player_concept:$("pcConcept").value.trim(), source_notes:$("sourceNotes").value.trim()
+    };
+    if(!form.genre||!form.premise||!form.player_concept){ alert("Please provide at least genre/setting, premise, and player character concept."); return; }
     setBusy(true,"Compiling campaign...");
     try{
-      const api=await callWorker(compilerPrompt(form)); const compiled=parseJson(api.text);
-      const fresh=newBaseState(); state=fresh;
-      state.campaign=compiled.campaign; state.player=compiled.player; state.world=compiled.world; state.npcs=compiled.npcs||[]; state.threads=compiled.threads||[];
-      addMessage("narrator",compiled.opening_narration||"The campaign begins.");
-      addEvent("campaign_compiled",{campaign:state.campaign?.title,npc_count:state.npcs.length,thread_count:state.threads.length});
-      addDebug({phase:"campaign_compile",request_id:api.openai_request_id,response_id:api.response_id});
+      const api=await callWorker(compilerPrompt(form),"campaign_compile");
+      const compiled=validateCompiledCampaign(api.data);
+      state=newBaseState();
+      state.campaign=compiled.campaign; state.player=compiled.player; state.world=compiled.world; state.npcs=compiled.npcs; state.threads=compiled.threads;
+      addMessage("narrator",compiled.opening_narration);
+      addEvent("campaign_compiled",{campaign:state.campaign.title,npc_count:state.npcs.length,thread_count:state.threads.length,worker_version:api.worker_version});
+      addDebug({phase:"campaign_compile",request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,structured:true});
       persist(); el.campaignDialog.close();
     }catch(e){ alert("Campaign creation failed: "+e.message); setStatus("bad","Campaign creation failed"); }
-    finally{ setBusy(false); }
+    finally{setBusy(false);}
   }
 
   async function playTurn(){
-    const text=el.playerInput.value.trim(); if(!text || busy || !state.campaign) return;
-    el.playerInput.value=""; state.turn += 1; addMessage("player",text); persist(); setBusy(true,"Adjudicating...");
+    const text=el.playerInput.value.trim(); if(!text||busy||!state.campaign) return;
+    const before=deepClone(state);
+    el.playerInput.value="";
+    state.turn+=1; addMessage("player",text); render(); setBusy(true,"Adjudicating...");
     try{
-      const aApi=await callWorker(adjudicationPrompt(text)); const adj=parseJson(aApi.text);
-      addDebug({phase:"adjudication",request_id:aApi.openai_request_id,response_id:aApi.response_id,adjudication:adj});
+      const aApi=await callWorker(adjudicationPrompt(text),"adjudicate");
+      const adj=aApi.data;
+      addDebug({phase:"adjudication",request_id:aApi.openai_request_id,response_id:aApi.response_id,usage:aApi.usage,adjudication:adj});
       if(!adj.resolution_required){
-        const patch=applyChanges(adj.state_changes||[]); addMessage("narrator",adj.narration||"The action resolves without uncertainty.");
-        addEvent("deterministic_resolution",{intent:adj.intent_summary,outcome:adj.deterministic_outcome,reason:adj.reason,patch});
+        const updateResult=applyUpdates(adj.updates);
+        addMessage("narrator",adj.narration||"The action resolves without uncertainty.");
+        addEvent("deterministic_resolution",{intent:adj.intent_summary,action_kind:adj.action_kind,outcome:adj.deterministic_outcome,reason:adj.reason,time_cost_hint:adj.time_cost_hint,updates:updateResult.summary,npc_actions:adj.npc_actions});
       }else{
+        if(adj.capability_level==="none"||adj.difficulty==="none") throw new Error("Referee requested probability resolution without a capability or difficulty.");
         const result=computeProbability(adj);
-        addEvent("probability_resolution",{intent:adj.intent_summary,adjudication:adj,result});
+        addEvent("probability_resolution",{intent:adj.intent_summary,action_kind:adj.action_kind,adjudication:adj,result});
         addDebug({phase:"probability",result});
         setStatus("","Resolving outcome...");
-        const oApi=await callWorker(outcomePrompt(text,adj,{success:result.success,magnitude:result.magnitude,stakes:adj.stakes}));
-        const out=parseJson(oApi.text); const patch=applyChanges(out.state_changes||[]);
-        for(const f of out.new_public_facts||[]) state.world.facts.push({visibility:"public",text:f.text});
-        for(const f of out.new_hidden_facts||[]) state.world.facts.push({visibility:"hidden",text:f.text});
-        addMessage("narrator",out.narration|| (result.success?"You succeed.":"You fail."));
-        addEvent("narrated_outcome",{success:result.success,magnitude:result.magnitude,patch});
-        addDebug({phase:"narration",request_id:oApi.openai_request_id,response_id:oApi.response_id});
+        const oApi=await callWorker(outcomePrompt(text,adj,{success:result.success,magnitude:result.magnitude,stakes:adj.stakes}),"narrate");
+        const out=oApi.data;
+        const updateResult=applyUpdates(out.updates);
+        addMessage("narrator",out.narration||(result.success?"You succeed.":"You fail."));
+        addEvent("narrated_outcome",{success:result.success,magnitude:result.magnitude,consequence_summary:out.consequence_summary,updates:updateResult.summary,npc_actions:out.npc_actions});
+        addDebug({phase:"narration",request_id:oApi.openai_request_id,response_id:oApi.response_id,usage:oApi.usage});
       }
       persist();
     }catch(e){
-      addMessage("system","Turn failed before it could be committed: "+e.message); state.turn=Math.max(0,state.turn-1); persist(); setStatus("bad","Turn failed");
-    }finally{ setBusy(false); }
+      state=before;
+      addMessage("system","Turn failed before any world-state changes were committed: "+e.message);
+      persist(); setStatus("bad","Turn failed");
+    }finally{setBusy(false);}
   }
 
   async function testWorker(){
     setBusy(true,"Testing Worker...");
     try{
-      const h=await fetch(worker()+"/health"); const hd=await h.json(); if(!hd?.ok) throw new Error("Health endpoint did not report ready.");
-      const api=await callWorker('Reply with exactly: Universal RPG connection successful.');
-      alert("Worker health: ready\nOpenAI: "+api.text.trim()); setStatus("good","Connected");
+      let h;
+      try{ h=await fetch(worker()+"/health"); }
+      catch(e){ throw new Error("Health request could not reach the Worker. Check ALLOWED_ORIGINS/CORS and Worker URL. "+e.message); }
+      const hd=await h.json().catch(()=>null);
+      if(!h.ok||!hd?.ok) throw new Error(hd?.error||"Health endpoint did not report ready.");
+      const api=await callWorker("Reply with exactly: Universal RPG connection successful.","plain");
+      const structured=hd.structured_outputs?"yes":"no";
+      alert(`Worker health: ready\nWorker version: ${hd.worker_version||"unknown"}\nStructured outputs: ${structured}\nModel: ${hd.model||api.model}\nOpenAI: ${api.text.trim()}`);
+      setStatus("good","Connected");
     }catch(e){ alert("Connection test failed: "+e.message); setStatus("bad","Connection failed"); }
-    finally{ setBusy(false); }
+    finally{setBusy(false);}
   }
 
   function exportJson(filename,obj){ const blob=new Blob([JSON.stringify(obj,null,2)],{type:"application/json"}); const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=filename; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000); }
   function exportSave(){ exportJson(`universal-rpg-save-turn-${state.turn}.json`,state); }
   function exportDebug(){
     if(!confirm("Debug export includes hidden NPC/world information and internal probability records. Continue?")) return;
-    exportJson(`universal-rpg-debug-turn-${state.turn}.json`,{exported_at:new Date().toISOString(),app_version:APP_VERSION,worker:worker(),state,last_debug:lastDebug});
+    exportJson(`universal-rpg-debug-turn-${state.turn}.json`,{exported_at:now(),app_version:APP_VERSION,schema_version:SCHEMA_VERSION,worker:worker(),state,last_debug:lastDebug});
   }
 
   function openSettings(){ el.workerUrl.value=worker(); el.gameToken.value=token(); el.rememberToken.checked=!!localStorage.getItem(TOKEN_KEY); el.settingsDialog.showModal(); }
@@ -392,20 +482,26 @@
   }
 
   function startNew(){
-    if(state.campaign && !confirm("Start a new campaign? Export your current save first if you want to keep it.")) return;
-    if(!token()){ openSettings(); return; }
+    if(state.campaign&&!confirm("Start a new campaign? Export your current save first if you want to keep it.")) return;
+    if(!token()){openSettings();return;}
     el.campaignDialog.showModal();
   }
 
   $("startBtn").onclick=startNew; $("newBtn").onclick=startNew; $("settingsBtn").onclick=openSettings; $("settingsSaveBtn").onclick=saveSettings; $("testBtn").onclick=testWorker; $("createCampaignBtn").onclick=createCampaign; $("sendBtn").onclick=playTurn;
   $("saveBtn").onclick=exportSave; $("debugBtn").onclick=exportDebug; $("importBtn").onclick=()=>el.importFile.click();
   document.querySelectorAll("[data-close]").forEach(b=>b.onclick=()=>$(b.dataset.close).close());
-  el.playerInput.addEventListener("keydown",e=>{ if(e.key==="Enter" && !e.shiftKey){e.preventDefault();playTurn();} });
-  el.importFile.addEventListener("change",async e=>{ const f=e.target.files?.[0]; if(!f)return; try{ const imported=JSON.parse(await f.text()); if(!imported?.schema_version) throw new Error("Not a Universal RPG save file."); state=imported; persist(); }catch(err){alert("Import failed: "+err.message);} finally{e.target.value="";} });
+  el.playerInput.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();playTurn();}});
+  el.importFile.addEventListener("change",async e=>{
+    const f=e.target.files?.[0]; if(!f)return;
+    try{ const imported=JSON.parse(await f.text()); validateStateEnvelope(imported); state=migrateState(imported); persist(); }
+    catch(err){ alert("Import failed: "+err.message); }
+    finally{e.target.value="";}
+  });
 
   render();
   if(!token()) setTimeout(openSettings,250);
 })();
+
 </script>
 </body>
 </html>

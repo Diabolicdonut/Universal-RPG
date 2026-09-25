@@ -1,5 +1,169 @@
 # Universal RPG — Audit Log
 
+## Version 0.2.0
+Date: 2026-09-25
+
+### Milestone
+Converted the first prototype from prompt-requested JSON to **API-enforced Structured Outputs** and formalized the first authoritative Universal RPG state schema. This checkpoint establishes the transport/state contract that later probability calibration, autonomous NPC simulation, world events, and source/module compilation will build on.
+
+### Worker changes
+
+- Updated Cloudflare Worker to v0.2.0.
+- Added request modes:
+  - `plain`
+  - `campaign_compile`
+  - `adjudicate`
+  - `narrate`
+- Added OpenAI Responses API Structured Outputs for the three game/referee modes using `text.format.type = json_schema` with `strict: true`.
+- Added server-side schemas for:
+  - campaign compilation
+  - consequence-gate adjudication
+  - post-resolution narration/state updates
+- Worker now parses structured model output itself and returns it in `data`; the browser no longer depends on extracting JSON from prose/code fences.
+- Added refusal and incomplete-response handling.
+- `/health` now reports:
+  - Worker version
+  - configured model
+  - whether Structured Outputs are enabled
+- Preserved `store: false`; OpenAI remains stateless and never becomes a second hidden campaign database.
+- Preserved GAME_TOKEN authentication and CORS origin controls.
+
+### Authoritative state schema v2
+
+The browser state now has explicit schema version `2` and includes:
+
+- campaign constitution
+- one player persona
+- world state
+- autonomous NPC records
+- open threads/situations
+- reserved clocks collection
+- transcript
+- event log
+- debug log
+
+Campaign compilation now requires stable IDs for generated entities and formalizes:
+
+- immutable campaign foundation facts
+- allowed/prohibited generation constraints
+- source fidelity/deviation policy
+- protagonist public and hidden capabilities
+- protagonist knowledge records with confidence (`known`, `probable`, `suspected`)
+- places with public description, hidden facts, and local generation constraints
+- world facts with public/hidden visibility
+- resources as typed records rather than arbitrary object keys
+- NPC public profile
+- NPC capabilities
+- NPC hidden nature, goals, knowledge, loyalties, fears, secrets, temperament, current intention, and relationship state
+- public/hidden adventure threads
+
+### State-update contract
+
+Removed free-form path patches from model output. Astra can now propose only domain-specific update collections:
+
+- time label
+- current place
+- player condition
+- inventory additions
+- player knowledge additions
+- world fact additions
+- known-place additions
+- NPC additions
+- NPC status changes
+- NPC relationship changes
+- NPC intention changes
+- thread additions
+- thread status changes
+
+The browser validates references and duplicate IDs before committing the update set. Campaign foundation cannot be modified through ordinary turn output.
+
+### Turn transaction safety
+
+- A full pre-turn snapshot is now taken before adjudication.
+- A failed Worker request, invalid structured response, invalid probability request, or invalid state update rolls the turn back to the pre-turn state.
+- The failure is recorded as a system message only after rollback.
+- This prevents partially committed turns where prose and state disagree.
+
+### Referee pipeline
+
+The live turn pipeline is now:
+
+1. Player supplies natural-language intent.
+2. Astra interprets intent and applies the resolution gate.
+3. If deterministic, Astra returns narration plus validated domain updates.
+4. If consequential uncertainty exists, Astra supplies only bounded capability/difficulty/factor inputs.
+5. Browser probability engine resolves the random outcome.
+6. Astra receives the fixed result and narrates it.
+7. Domain-specific updates are validated and committed transactionally.
+8. Event/debug records are appended.
+
+NPC actions are also returned as structured records containing the NPC, action, whether the action is player-visible, and a hidden reason. This is groundwork for a later independent NPC simulation pass.
+
+### Client improvements
+
+- Updated `index.html` to v0.2.
+- Added clearer network/CORS diagnostics when `fetch` fails before a Worker response is received.
+- Connection test now reports Worker version, model, and Structured Outputs status.
+- Added a small player-facing `Known` panel based on explicit protagonist knowledge records.
+- Added v0.1 -> v0.2 save migration.
+- Imported saves are checked for a recognized Universal RPG schema before use.
+- Campaign compile results are validated for required sections and duplicate IDs.
+- Current place is guaranteed to appear in known places after compilation.
+
+### Validation performed
+
+- `universal-rpg-worker.js` passed `node --check`.
+- Embedded `index.html` JavaScript passed `node --check`.
+- Verified current OpenAI documentation before implementation:
+  - GPT-6 Astra supports the Responses API and Structured Outputs.
+  - Responses Structured Outputs use `text.format` with `type: json_schema` and `strict: true`.
+  - Structured Output object fields must be required and objects must specify `additionalProperties: false`.
+  - nullable fields may be represented with a union including `null`.
+- Live v0.2 Worker/API behavior cannot be validated until the updated Worker is deployed by the user.
+
+### Important deployment requirement
+
+`index.html` v0.2 expects Worker v0.2 or later. Deploy the updated Worker **before** testing campaign compilation. If the old Worker remains deployed, the client will report that structured data was not returned.
+
+Recommended Cloudflare configuration remains:
+
+```text
+OPENAI_API_KEY   (Secret)
+GAME_TOKEN       (Secret)
+
+OPENAI_MODEL = gpt-6-astra
+REASONING_EFFORT = high
+MAX_OUTPUT_TOKENS = 12000
+MAX_INPUT_CHARS = 240000
+ALLOWED_ORIGINS = https://diabolicdonut.github.io
+```
+
+### Known limitations
+
+- Probability anchors and logistic curve remain prototype values and have not been calibrated.
+- Astra still selects the bounded capability/difficulty/factor inputs; consistency across many equivalent situations still requires an evaluation suite.
+- Hidden state remains stored in the browser and can be inspected by a technically inclined player.
+- NPC action records are structured but NPCs are not yet simulated off-screen on an independent clock.
+- Place/Being/Item/Weapon/Vehicle/Hazard/Capability schemas are not yet generalized into the full universal object family.
+- Clocks are reserved in state but have no live advancement procedure yet.
+- Long-campaign context compaction/summarization is not implemented.
+- Uploaded sourcebooks/modules are not yet compiled or provenance-tracked.
+
+### Recommended next checkpoint
+
+1. Deploy Worker v0.2 and GitHub `index.html` v0.2.
+2. Run a fresh Dinotopia campaign compile and export the debug JSON.
+3. Exercise 8-12 representative turns containing:
+   - deterministic actions
+   - consequential uncertain actions
+   - requests made to autonomous companions
+   - information gathering
+   - movement between places
+4. Audit all structured state changes for continuity.
+5. Then build the **Probability Calibration Suite** before adding combat or other large subsystems.
+
+---
+
 ## Version 0.1.0
 Date: 2026-09-25
 
