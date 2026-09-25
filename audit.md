@@ -3,6 +3,9 @@
 ## Version 0.3.3
 Date: 2026-09-25
 
+### Display-version hotfix
+Corrected two stale hard-coded `v0.3.2` strings in `index.html`: the visible application header and the campaign-compiler instruction banner. The actual `APP_VERSION` and v0.3.3 model-routing logic were already correct. No rules, save schema, or routing behavior changed in this hotfix.
+
 ### Milestone
 Refined the cost-routing architecture into a **three-tier referee pipeline** so ordinary prose and simple decisions stay inexpensive while important NPC behavior and meaningful conversations receive more reasoning depth without defaulting to GPT-6 Astra.
 
