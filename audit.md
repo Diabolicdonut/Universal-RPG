@@ -1,5 +1,141 @@
 # Universal RPG — Audit Log
 
+## Version 0.3.1
+Date: 2026-09-25
+
+### Milestone
+Decoupled Universal RPG game development from Cloudflare infrastructure. The Cloudflare Worker is now designed as a **stable security gateway** only. Universal RPG prompts, Structured Output schemas, referee contracts, and game logic have moved into `index.html`. Ordinary game iterations should now require only two uploaded files: `index.html` and `audit.md`.
+
+### Architecture change
+
+Previous flow:
+
+```text
+index.html
+→ mode name
+→ Worker-owned Universal RPG prompt/schema
+→ OpenAI
+```
+
+New flow:
+
+```text
+index.html
+├─ Universal RPG referee instructions
+├─ Structured Output schemas
+├─ campaign compiler contract
+├─ adjudication contract
+├─ assessment contract
+├─ narration contract
+└─ game mechanics/state
+        ↓
+Stable Cloudflare Gateway
+├─ authenticates GAME_TOKEN
+├─ protects OPENAI_API_KEY
+├─ enforces origin/model/request limits
+└─ forwards the permitted Responses API request
+        ↓
+OpenAI / GPT-6 Astra
+```
+
+The Worker no longer knows what `campaign_compile`, `adjudicate`, `assessment`, `narrate`, NPCs, pending actions, probability bands, or campaign state mean.
+
+### Client changes
+
+- Updated app version to `0.3.1`; save schema remains version `3` because authoritative game-state structure did not change.
+- Moved the Universal RPG system/referee instructions into `index.html`.
+- Moved all current strict JSON Structured Output schemas into `index.html`:
+  - campaign compilation
+  - intent/adjudication
+  - player-facing assessment
+  - outcome/narration
+- `callWorker()` now builds an OpenAI Responses API request in the browser and sends it to the generic gateway.
+- The client parses OpenAI output and Structured Output JSON itself.
+- Connection testing now expects `gateway_version >= 1.0.0` rather than a game-specific Worker version.
+- Campaign/debug events now record gateway version rather than Worker/game version.
+- Updated UI wording to describe Cloudflare as the secure forwarding layer rather than the referee implementation.
+
+### Stable gateway policy
+
+The one-time replacement Worker is **Universal RPG Gateway v1.0.0**. It contains no Universal RPG rules. It performs only infrastructure/security duties:
+
+- holds `OPENAI_API_KEY` server-side
+- validates `GAME_TOKEN`
+- enforces allowed browser origins
+- restricts the allowed OpenAI model
+- limits request and output size
+- forces `store: false`
+- permits strict JSON Schema Structured Outputs supplied by `index.html`
+- forwards the request to the OpenAI Responses API
+- returns the raw successful OpenAI response to the browser
+
+Normal Universal RPG development should **not** require further Worker edits. A Worker change should be reserved for infrastructure changes such as moving domains, changing authentication, changing the allowed model, changing security limits, or adopting a materially different OpenAI API transport.
+
+### Cloudflare configuration after migration
+
+Keep only these two Cloudflare Secrets:
+
+```text
+OPENAI_API_KEY
+GAME_TOKEN
+```
+
+After the stable Gateway v1.0.0 code is deployed successfully, these old Runtime Variables can be deleted because their equivalents are no longer read from Cloudflare:
+
+```text
+ALLOWED_ORIGINS
+OPENAI_MODEL
+REASONING_EFFORT
+MAX_OUTPUT_TOKENS
+MAX_INPUT_CHARS
+```
+
+The permitted GitHub Pages origin and hard security ceilings now live in the stable gateway source. Game-level model request settings and Structured Output contracts live in `index.html`.
+
+### Deployment order
+
+This is a one-time infrastructure migration:
+
+1. Replace the current Cloudflare Worker code with **Universal RPG Gateway v1.0.0** and deploy it.
+2. Open `/health`; it should report `service: universal-rpg-gateway` and `gateway_version: 1.0.0`.
+3. Replace GitHub `index.html` with v0.3.1.
+4. Use **Settings → Test Worker** in the game.
+5. Once the test passes, delete the five obsolete Runtime Variables listed above.
+6. Leave the two Secrets in place.
+
+Future normal iterations: upload only `index.html` and `audit.md`.
+
+### Validation performed
+
+- Updated `index.html` embedded JavaScript passed `node --check`.
+- Stable Gateway v1.0.0 source passed `node --check`.
+- Verified current v0.3 game-state schema remains unchanged.
+- Verified the browser now owns the current Structured Output schemas and AI referee instructions.
+- Verified connection test no longer depends on a game-specific Worker version.
+- Live validation still requires deploying Gateway v1.0.0 and exercising campaign compilation and at least one assessment/confirmation/resolution turn.
+
+### Known limitations
+
+- Gateway v1 currently permits string input plus strict JSON Schema text output, matching the current Universal RPG architecture. Future use of OpenAI tools, images, files, streaming, or another API endpoint would be an infrastructure change and could require a gateway revision.
+- `gpt-6-astra` is currently the only model permitted by Gateway v1. Changing the model is intentionally treated as an infrastructure/configuration decision rather than an ordinary RPG rules iteration.
+- The probability model remains provisional; this migration does not alter v0.3 probability calibration.
+
+### Next development checkpoint
+
+With infrastructure decoupled, return to game-engine work. The next major iteration should be the Probability Calibration / weapon-resolution layer, including the emerging universal weapon profile:
+
+```text
+Damage
+Penetration
+Range
+Handling
+Scale
+Traits
+Requirements / Resources
+```
+
+---
+
 ## Version 0.3.0
 Date: 2026-09-25
 

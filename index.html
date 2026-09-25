@@ -46,7 +46,7 @@
 <body>
 <div class="app" id="app">
   <header>
-    <div class="brand">Universal RPG</div><div class="version">v0.3</div>
+    <div class="brand">Universal RPG</div><div class="version">v0.3.1</div>
     <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Not connected</span></div>
     <div class="spacer"></div>
     <button class="btn small" id="newBtn">New Campaign</button>
@@ -64,7 +64,7 @@
           <div class="empty-inner">
             <h1>Universal RPG</h1>
             <p>One persona. A persistent world. Hidden mechanics. Independent people.</p>
-            <p>Create a campaign to begin. The browser keeps the authoritative game state; the Cloudflare Worker supplies the referee and narrator.</p>
+            <p>Create a campaign to begin. The browser keeps the authoritative game state and AI contract; Cloudflare only secures and forwards API requests to the referee model.</p>
             <button class="btn primary" id="startBtn">Create Campaign</button>
           </div>
         </div>
@@ -113,13 +113,183 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "0.3.0";
+  const APP_VERSION = "0.3.1";
   const SCHEMA_VERSION = 3;
   const STATE_KEY = "universalRpg.state.v0_3";
   const LEGACY_STATE_KEYS = ["universalRpg.state.v0_2", "universalRpg.state.v0_1"];
   const WORKER_KEY = "universalRpg.workerUrl";
   const TOKEN_KEY = "universalRpg.gameToken";
   const DEFAULT_WORKER = "https://universal-rpg.diabolicdonut.workers.dev";
+
+  // Game/referee configuration intentionally lives in index.html. The Cloudflare
+  // Worker is a stable security gateway and does not know Universal RPG rules.
+  const AI_MODEL = "gpt-6-astra";
+  const AI_REASONING_EFFORT = "high";
+  const AI_MAX_OUTPUT_TOKENS = 12000;
+  const AI_SYSTEM_PROMPT = `You are the AI referee, campaign compiler, and narrator for Universal RPG.
+
+The browser-side Universal RPG engine and supplied campaign/world state are authoritative. Treat established state as canon. Never silently rewrite established facts, inventories, positions, relationships, NPC identities, or campaign rules.
+
+The player controls exactly one protagonist. Every other person or intelligent being is an autonomous NPC with their own knowledge, goals, loyalties, fears, obligations, and agency. NPC cooperation is not player control.
+
+Do not invent a random check merely because an action resembles a traditional RPG skill check. Resolution is probabilistic only when the outcome is genuinely uncertain and the difference between success and failure matters. A consequential intention normally receives a character-informed assessment before commitment. Clarification and assessment do not themselves change world state. When the engine supplies an already-resolved result, accept it exactly and narrate it rather than rerolling or reversing it.
+
+Do not expose hidden mechanics, numeric probabilities, hidden character statistics, private NPC information, or hidden world facts unless the supplied state explicitly authorizes revealing them. Player-facing assessments must use only what the protagonist could reasonably perceive, know, or infer.
+
+Keep narration grounded in the established genre, setting, tone, and known facts. If something is already established, use it. If something is genuinely unresolved, any generated detail must obey the campaign foundation and generation constraints.`;
+
+  const ITEM_SCHEMA = {
+    type:"object",
+    properties:{ id:{type:"string"}, name:{type:"string"}, description:{type:"string"} },
+    required:["id","name","description"], additionalProperties:false
+  };
+  const CAPABILITY_SCHEMA = {
+    type:"object",
+    properties:{
+      name:{type:"string"},
+      level:{type:"string",enum:["untrained","novice","familiar","competent","skilled","expert","master","legendary"]},
+      description:{type:"string"}, tags:{type:"array",items:{type:"string"}}
+    },
+    required:["name","level","description","tags"], additionalProperties:false
+  };
+  const FACT_SCHEMA = {
+    type:"object", properties:{ id:{type:"string"}, visibility:{type:"string",enum:["public","hidden"]}, text:{type:"string"} },
+    required:["id","visibility","text"], additionalProperties:false
+  };
+  const KNOWLEDGE_SCHEMA = {
+    type:"object", properties:{ id:{type:"string"}, text:{type:"string"}, confidence:{type:"string",enum:["known","probable","suspected"]} },
+    required:["id","text","confidence"], additionalProperties:false
+  };
+  const PLACE_SCHEMA = {
+    type:"object",
+    properties:{ id:{type:"string"}, name:{type:"string"}, public_description:{type:"string"}, hidden_facts:{type:"array",items:{type:"string"}}, generation_constraints:{type:"array",items:{type:"string"}} },
+    required:["id","name","public_description","hidden_facts","generation_constraints"], additionalProperties:false
+  };
+  const NPC_SCHEMA = {
+    type:"object",
+    properties:{
+      id:{type:"string"}, name:{type:"string"}, status:{type:"string",enum:["present","elsewhere","missing","incapacitated","dead","removed"]},
+      public:{
+        type:"object", properties:{ role:{type:"string"}, relationship:{type:"string"}, description:{type:"string"}, known_traits:{type:"array",items:{type:"string"}} },
+        required:["role","relationship","description","known_traits"], additionalProperties:false
+      },
+      capabilities:{type:"array",items:CAPABILITY_SCHEMA},
+      hidden:{
+        type:"object",
+        properties:{
+          nature:{type:"string"}, goals:{type:"array",items:{type:"string"}}, knowledge:{type:"array",items:{type:"string"}}, loyalties:{type:"array",items:{type:"string"}}, fears:{type:"array",items:{type:"string"}}, secrets:{type:"array",items:{type:"string"}}, temperament:{type:"string"}, current_intention:{type:"string"},
+          relationship:{ type:"object", properties:{ trust:{type:"string"}, affection:{type:"string"}, authority:{type:"string"}, obligation:{type:"string"} }, required:["trust","affection","authority","obligation"], additionalProperties:false }
+        },
+        required:["nature","goals","knowledge","loyalties","fears","secrets","temperament","current_intention","relationship"], additionalProperties:false
+      }
+    },
+    required:["id","name","status","public","capabilities","hidden"], additionalProperties:false
+  };
+  const THREAD_SCHEMA = {
+    type:"object", properties:{ id:{type:"string"}, label:{type:"string"}, status:{type:"string",enum:["open","closed","failed","dormant"]}, visibility:{type:"string",enum:["public","hidden"]} },
+    required:["id","label","status","visibility"], additionalProperties:false
+  };
+  const NPC_ACTION_SCHEMA = {
+    type:"object", properties:{ npc_id:{type:"string"}, action:{type:"string"}, player_visible:{type:"boolean"}, hidden_reason:{type:"string"} },
+    required:["npc_id","action","player_visible","hidden_reason"], additionalProperties:false
+  };
+  const FACTOR_SCHEMA = {
+    type:"object", properties:{ label:{type:"string"}, impact:{type:"string",enum:["major_advantage","significant_advantage","minor_advantage","minor_hindrance","significant_hindrance","major_hindrance"]} },
+    required:["label","impact"], additionalProperties:false
+  };
+  const UPDATES_SCHEMA = {
+    type:"object",
+    properties:{
+      time_label:{type:["string","null"]},
+      current_place:{type:["object","null"],properties:PLACE_SCHEMA.properties,required:PLACE_SCHEMA.required,additionalProperties:false},
+      player_condition:{type:["string","null"]},
+      inventory_additions:{type:"array",items:ITEM_SCHEMA},
+      player_knowledge_additions:{type:"array",items:KNOWLEDGE_SCHEMA},
+      world_fact_additions:{type:"array",items:FACT_SCHEMA},
+      known_place_additions:{type:"array",items:PLACE_SCHEMA},
+      npc_additions:{type:"array",items:NPC_SCHEMA},
+      npc_status_changes:{type:"array",items:{type:"object",properties:{npc_id:{type:"string"},status:{type:"string",enum:["present","elsewhere","missing","incapacitated","dead","removed"]}},required:["npc_id","status"],additionalProperties:false}},
+      npc_relationship_changes:{type:"array",items:{type:"object",properties:{npc_id:{type:"string"},public_relationship:{type:"string"},trust:{type:"string"},affection:{type:"string"},authority:{type:"string"},obligation:{type:"string"}},required:["npc_id","public_relationship","trust","affection","authority","obligation"],additionalProperties:false}},
+      npc_intention_changes:{type:"array",items:{type:"object",properties:{npc_id:{type:"string"},current_intention:{type:"string"}},required:["npc_id","current_intention"],additionalProperties:false}},
+      thread_additions:{type:"array",items:THREAD_SCHEMA},
+      thread_status_changes:{type:"array",items:{type:"object",properties:{thread_id:{type:"string"},status:{type:"string",enum:["open","closed","failed","dormant"]}},required:["thread_id","status"],additionalProperties:false}}
+    },
+    required:["time_label","current_place","player_condition","inventory_additions","player_knowledge_additions","world_fact_additions","known_place_additions","npc_additions","npc_status_changes","npc_relationship_changes","npc_intention_changes","thread_additions","thread_status_changes"],
+    additionalProperties:false
+  };
+
+  const STRUCTURED_SCHEMAS = {
+    campaign_compile:{
+      type:"object",
+      properties:{
+        campaign:{
+          type:"object",
+          properties:{
+            id:{type:"string"}, title:{type:"string"}, genre:{type:"string"}, premise:{type:"string"}, tone:{type:"string"}, era_technology:{type:"string"}, source_mode:{type:"string",enum:["Original","Canonical","Adaptive","Inspirational"]}, foundation:{type:"array",items:{type:"string"}},
+            generation_constraints:{type:"object",properties:{allowed:{type:"array",items:{type:"string"}},prohibited:{type:"array",items:{type:"string"}}},required:["allowed","prohibited"],additionalProperties:false},
+            source_policy:{type:"object",properties:{fidelity_goal:{type:"string"},deviation_policy:{type:"string"}},required:["fidelity_goal","deviation_policy"],additionalProperties:false}
+          },
+          required:["id","title","genre","premise","tone","era_technology","source_mode","foundation","generation_constraints","source_policy"], additionalProperties:false
+        },
+        player:{
+          type:"object",
+          properties:{id:{type:"string"},name:{type:"string"},concept:{type:"string"},background:{type:"string"},condition:{type:"string"},public_capabilities:{type:"array",items:CAPABILITY_SCHEMA},hidden_capabilities:{type:"array",items:CAPABILITY_SCHEMA},limitations:{type:"array",items:{type:"string"}},inventory:{type:"array",items:ITEM_SCHEMA},knowledge:{type:"array",items:KNOWLEDGE_SCHEMA}},
+          required:["id","name","concept","background","condition","public_capabilities","hidden_capabilities","limitations","inventory","knowledge"], additionalProperties:false
+        },
+        world:{
+          type:"object",
+          properties:{
+            time_label:{type:"string"}, current_place:PLACE_SCHEMA, known_places:{type:"array",items:PLACE_SCHEMA},
+            resources:{type:"array",items:{type:"object",properties:{name:{type:"string"},amount:{type:"number"},unit:{type:"string"},visibility:{type:"string",enum:["public","hidden"]}},required:["name","amount","unit","visibility"],additionalProperties:false}},
+            facts:{type:"array",items:FACT_SCHEMA}
+          },
+          required:["time_label","current_place","known_places","resources","facts"], additionalProperties:false
+        },
+        npcs:{type:"array",items:NPC_SCHEMA}, threads:{type:"array",items:THREAD_SCHEMA}, opening_narration:{type:"string"}
+      },
+      required:["campaign","player","world","npcs","threads","opening_narration"], additionalProperties:false
+    },
+    adjudicate:{
+      type:"object",
+      properties:{
+        intent_summary:{type:"string"},
+        intent_type:{type:"string",enum:["clarify","assess","act","examine","communicate","meta","confirm_pending","cancel_pending"]},
+        pending_disposition:{type:"string",enum:["none","confirm","cancel","keep","replace"]},
+        commitment:{type:"string",enum:["none","contemplated","committed","immediate"]},
+        action_kind:{type:"string",enum:["move","observe","manipulate","attack","defend","communicate","use","travel","rest","create","other"]},
+        action_possible:{type:"boolean"}, meaningful_consequence:{type:"boolean"}, checkpoint_required:{type:"boolean"}, resolution_required:{type:"boolean"},
+        deterministic_outcome:{type:"string",enum:["success","failure","none"]}, reason:{type:"string"}, capability_name:{type:"string"},
+        capability_level:{type:"string",enum:["none","untrained","novice","familiar","competent","skilled","expert","master","legendary"]},
+        difficulty:{type:"string",enum:["none","routine","easy","standard","difficult","formidable","extreme"]},
+        factors:{type:"array",items:FACTOR_SCHEMA},
+        stakes:{type:"object",properties:{success:{type:"string"},failure:{type:"string"}},required:["success","failure"],additionalProperties:false},
+        time_cost_hint:{type:"string"}, narration:{type:"string"}, updates:UPDATES_SCHEMA, npc_actions:{type:"array",items:NPC_ACTION_SCHEMA},
+        assessment:{
+          type:"object",
+          properties:{
+            perceived_difficulty:{type:"string",enum:["none","routine","easy","standard","difficult","formidable","extreme"]},
+            perceived_factors:{type:"array",items:FACTOR_SCHEMA}, apparent_success_stakes:{type:"string"}, apparent_failure_stakes:{type:"string"}, uncertainty_note:{type:"string"},
+            confidence:{type:"string",enum:["high","moderate","low","unknown"]}
+          },
+          required:["perceived_difficulty","perceived_factors","apparent_success_stakes","apparent_failure_stakes","uncertainty_note","confidence"], additionalProperties:false
+        }
+      },
+      required:["intent_summary","intent_type","pending_disposition","commitment","action_kind","action_possible","meaningful_consequence","checkpoint_required","resolution_required","deterministic_outcome","reason","capability_name","capability_level","difficulty","factors","stakes","time_cost_hint","narration","updates","npc_actions","assessment"],
+      additionalProperties:false
+    },
+    assessment:{type:"object",properties:{message:{type:"string"}},required:["message"],additionalProperties:false},
+    narrate:{
+      type:"object",
+      properties:{narration:{type:"string"},updates:UPDATES_SCHEMA,npc_actions:{type:"array",items:NPC_ACTION_SCHEMA},consequence_summary:{type:"string"}},
+      required:["narration","updates","npc_actions","consequence_summary"], additionalProperties:false
+    }
+  };
+
+  function outputFormatFor(mode){
+    const schema=STRUCTURED_SCHEMAS[mode];
+    if(!schema) return null;
+    return {type:"json_schema",name:`universal_rpg_${mode}_v031`,strict:true,schema};
+  }
 
   const CAPABILITY = { untrained:25, novice:35, familiar:45, competent:55, skilled:65, expert:75, master:85, legendary:95 };
   const DIFFICULTY = { routine:20, easy:35, standard:50, difficult:65, formidable:80, extreme:95 };
@@ -268,18 +438,72 @@
   function addEvent(type,data){ state.event_log.push({id:crypto.randomUUID(),turn:state.turn,at:now(),type,data}); if(state.event_log.length>700) state.event_log.shift(); }
   function addDebug(entry){ state.debug_log.push({at:now(),turn:state.turn,...entry}); if(state.debug_log.length>300) state.debug_log.shift(); lastDebug=entry; }
 
+  function extractOutputText(apiResult){
+    if(typeof apiResult?.output_text==="string") return apiResult.output_text;
+    const pieces=[];
+    for(const item of apiResult?.output||[]){
+      if(item?.type!=="message") continue;
+      for(const content of item?.content||[]){
+        if(content?.type==="output_text"&&typeof content.text==="string") pieces.push(content.text);
+      }
+    }
+    return pieces.join("\n");
+  }
+
+  function extractRefusal(apiResult){
+    for(const item of apiResult?.output||[]){
+      if(item?.type!=="message") continue;
+      for(const content of item?.content||[]){
+        if(content?.type==="refusal"&&typeof content.refusal==="string") return content.refusal;
+      }
+    }
+    return null;
+  }
+
   async function callWorker(input,mode="plain"){
     if(!token()) throw new Error("Game token is not configured. Open Settings first.");
+    const request={
+      model:AI_MODEL,
+      instructions:AI_SYSTEM_PROMPT,
+      input,
+      reasoning:{effort:AI_REASONING_EFFORT},
+      max_output_tokens:AI_MAX_OUTPUT_TOKENS,
+      store:false
+    };
+    const format=outputFormatFor(mode);
+    if(format) request.text={format};
+
     let r;
     try{
-      r=await fetch(worker()+"/api/turn",{method:"POST",headers:{"Content-Type":"application/json","Authorization":`Bearer ${token()}`},body:JSON.stringify({input,mode})});
+      r=await fetch(worker()+"/api/turn",{method:"POST",headers:{"Content-Type":"application/json","Authorization":`Bearer ${token()}`},body:JSON.stringify({request})});
     }catch(e){
-      throw new Error("Network request failed before the Worker returned a response. Check ALLOWED_ORIGINS/CORS, the Worker URL, and your connection. Browser detail: "+e.message);
+      throw new Error("Network request failed before the gateway returned a response. Check the Worker URL, its allowed-origin configuration, and your connection. Browser detail: "+e.message);
     }
-    const data=await r.json().catch(()=>null);
-    if(!r.ok||!data?.ok) throw new Error(data?.detail||data?.error||`Worker request failed (${r.status})`);
-    if(mode!=="plain"&&(!data.data||typeof data.data!=="object")) throw new Error(`Worker returned no structured data for mode ${mode}. Deploy Worker v0.3.0 or later.`);
-    return data;
+    const gateway=await r.json().catch(()=>null);
+    if(!r.ok||!gateway?.ok) throw new Error(gateway?.detail||gateway?.error||`Gateway request failed (${r.status})`);
+    const apiResult=gateway.response;
+    if(!apiResult||typeof apiResult!=="object") throw new Error("Gateway returned no OpenAI response object.");
+    if(apiResult.status==="incomplete") throw new Error(`OpenAI response was incomplete: ${apiResult?.incomplete_details?.reason||"unknown"}`);
+    const refusal=extractRefusal(apiResult);
+    if(refusal) throw new Error("OpenAI refused the request: "+refusal);
+    const text=extractOutputText(apiResult);
+    if(!text) throw new Error("OpenAI returned no text output.");
+    let structuredData=null;
+    if(format){
+      try{ structuredData=JSON.parse(text); }
+      catch{ throw new Error(`Structured output for ${mode} was not valid JSON.`); }
+    }
+    return {
+      ok:true,
+      text,
+      data:structuredData,
+      model:apiResult.model||AI_MODEL,
+      response_id:apiResult.id||null,
+      status:apiResult.status||"completed",
+      usage:apiResult.usage||null,
+      openai_request_id:gateway.openai_request_id||null,
+      gateway_version:gateway.gateway_version||null
+    };
   }
 
   function currentContext(){
@@ -541,7 +765,7 @@ ${JSON.stringify(resolution,null,2)}`;
       state=newBaseState();
       state.campaign=compiled.campaign; state.player=compiled.player; state.world=compiled.world; state.npcs=compiled.npcs; state.threads=compiled.threads;
       addMessage("narrator",compiled.opening_narration);
-      addEvent("campaign_compiled",{campaign:state.campaign.title,npc_count:state.npcs.length,thread_count:state.threads.length,worker_version:api.worker_version});
+      addEvent("campaign_compiled",{campaign:state.campaign.title,npc_count:state.npcs.length,thread_count:state.threads.length,gateway_version:api.gateway_version});
       addDebug({phase:"campaign_compile",request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,structured:true});
       persist(); el.campaignDialog.close();
     }catch(e){ alert("Campaign creation failed: "+e.message); setStatus("bad","Campaign creation failed"); }
@@ -694,10 +918,9 @@ ${JSON.stringify(resolution,null,2)}`;
       catch(e){ throw new Error("Health request could not reach the Worker. Check ALLOWED_ORIGINS/CORS and Worker URL. "+e.message); }
       const hd=await h.json().catch(()=>null);
       if(!h.ok||!hd?.ok) throw new Error(hd?.error||"Health endpoint did not report ready.");
-      if(!versionAtLeast(hd.worker_version,"0.3.0")) throw new Error(`Worker ${hd.worker_version||"unknown"} is too old. Deploy Universal RPG Worker v0.3.0 or later.`);
+      if(!versionAtLeast(hd.gateway_version,"1.0.0")) throw new Error(`Gateway ${hd.gateway_version||"unknown"} is too old. Deploy the stable Universal RPG Gateway v1.0.0.`);
       const api=await callWorker("Reply with exactly: Universal RPG connection successful.","plain");
-      const structured=hd.structured_outputs?"yes":"no";
-      alert(`Worker health: ready\nWorker version: ${hd.worker_version||"unknown"}\nStructured outputs: ${structured}\nModel: ${hd.model||api.model}\nOpenAI: ${api.text.trim()}`);
+      alert(`Gateway health: ready\nGateway version: ${hd.gateway_version||"unknown"}\nModel: ${api.model}\nOpenAI: ${api.text.trim()}`);
       setStatus("good","Connected");
     }catch(e){ alert("Connection test failed: "+e.message); setStatus("bad","Connection failed"); }
     finally{setBusy(false);}
