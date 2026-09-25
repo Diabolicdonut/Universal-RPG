@@ -1,5 +1,277 @@
 # Universal RPG — Audit Log
 
+## Version 0.3.3
+Date: 2026-09-25
+
+### Milestone
+Refined the cost-routing architecture into a **three-tier referee pipeline** so ordinary prose and simple decisions stay inexpensive while important NPC behavior and meaningful conversations receive more reasoning depth without defaulting to GPT-6 Astra.
+
+### Model routing
+
+The active routing profiles in `index.html` are now:
+
+```text
+Campaign compilation             GPT-6 Astra / High
+Major world generation           GPT-6 Astra / High
+
+Routine adjudication             GPT-6 Sol / Low
+Important/significant adjudication GPT-6 Sol / Medium
+Exceptional adjudication         GPT-6 Astra / High
+
+Risk assessment wording          GPT-6 Sol / Low
+Routine narration                GPT-6 Sol / Low
+Significant narration            GPT-6 Sol / Medium
+Connection/simple utility calls  GPT-6 Sol / Low
+```
+
+Authoritative simulation remains local JavaScript. The language model does not own probability sampling, state mutation authority, inventory truth, or deterministic mechanics.
+
+### Low → Medium → Astra referee escalation
+
+Ordinary player input first receives a GPT-6 Sol / Low adjudication pass. That response must classify the reasoning burden as `routine`, `complex`, or `exceptional`.
+
+`routine` is intended for:
+
+- clarification
+- risk assessment
+- ordinary movement and observation
+- atmosphere and description
+- routine conversation
+- simple NPC reactions
+- straightforward actions involving only a few obvious facts
+
+`complex` now explicitly includes situations where better reasoning materially matters:
+
+- important NPC decisions
+- persuasion and negotiation
+- arguments
+- deception
+- relationship-changing scenes
+- multiple important NPCs interacting
+- hidden-information reasoning
+- conflicting NPC goals or loyalties
+- complicated tactical choices
+- scenes where several established facts constrain what an NPC should decide or say
+
+When the Low pass classifies a request as `complex` or `exceptional`, the browser automatically re-adjudicates the same authoritative state and player input with **GPT-6 Sol / Medium**. The Low result is not used as the final adjudication.
+
+Only if the Medium pass still classifies the request as `exceptional` or explicitly recommends escalation does the browser send the case to **GPT-6 Astra / High**.
+
+This implements the intended cost ladder:
+
+```text
+Sol / Low
+   ↓ only when needed
+Sol / Medium
+   ↓ only when genuinely exceptional
+Astra / High
+```
+
+High stakes, danger, emotional importance, or a low chance of success are explicitly not sufficient reasons by themselves to use Astra.
+
+### Narration and NPC behavior
+
+Narration now follows the final adjudication complexity instead of always using Low reasoning:
+
+```text
+routine final adjudication   → GPT-6 Sol / Low narration
+complex final adjudication   → GPT-6 Sol / Medium narration
+exceptional final adjudication → GPT-6 Sol / Medium narration after Astra has fixed the difficult adjudication
+```
+
+This keeps ordinary descriptive prose inexpensive while allowing relationship-heavy scenes, deception, multi-NPC exchanges, and other consequential social scenes to receive Medium reasoning where it matters.
+
+Astra is used to solve unusually difficult referee problems, not merely to write prettier prose. Once Astra has fixed an exceptional adjudication, Sol / Medium can normally narrate the result faithfully.
+
+### Campaign compilation
+
+Campaign compilation remains GPT-6 Astra / High because it establishes the campaign constitution, initial world state, protagonist, NPCs, hidden information, constraints, and opening situation. No change was made to the campaign compilation contract in this iteration.
+
+### Local engine responsibilities
+
+The following remain local/browser-authoritative and do not consume AI reasoning simply to perform the mechanic:
+
+- probability calculation and random sampling
+- pending-action confirmation/cancellation where simple language can be recognized locally
+- save-state ownership and validation
+- inventory and established world-state truth
+- deterministic mechanics
+- future Damage / Penetration / Handling resolution
+- future travel/resource/time mechanics
+
+### Cloudflare / gateway
+
+**No Worker update is required for v0.3.3.**
+
+The existing stable Universal RPG Gateway v1.1.0 already permits client-side model routing and remains unchanged. Cloudflare continues to hold only the security/infrastructure boundary, principally `OPENAI_API_KEY` and `GAME_TOKEN`.
+
+Normal development remains:
+
+```text
+replace index.html
+replace audit.md
+```
+
+rather than redeploying the Worker.
+
+### UI / diagnostics
+
+The Settings connection test now reports the active role split explicitly:
+
+- routine referee model / reasoning effort
+- important NPC/referee model / reasoning effort
+- routine narration model / reasoning effort
+- significant narration model / reasoning effort
+- campaign compiler model / reasoning effort
+
+Debug records continue to capture the actual model and AI profile used for each call. New elevation events distinguish the transition from Sol / Low to Sol / Medium from the rarer escalation to Astra.
+
+### Compatibility
+
+- App version advanced to `0.3.3`.
+- Save schema remains version `3`.
+- Existing v0.3.x saves remain compatible.
+- No campaign-state migration is required.
+- Gateway requirement remains v1.1.0 or newer.
+
+### Validation performed
+
+- Embedded JavaScript extracted from `index.html` and passed `node --check`.
+- Verified that ordinary adjudication uses the `adjudicate` Sol / Low profile.
+- Verified that complex/exceptional first-pass results route through `adjudicate_medium` before any Astra escalation.
+- Verified that only a Medium result still marked exceptional/escalation-worthy routes to `adjudicate_complex` (Astra / High).
+- Verified that routine outcome narration uses `narrate` and non-routine outcome narration uses `narrate_medium`.
+- Verified that campaign compilation remains mapped to Astra / High.
+- No Worker source or Cloudflare variables were changed.
+
+### Recommended validation after upload
+
+1. Upload `index.html` v0.3.3 and this `audit.md`; do not modify the Worker.
+2. Run **Settings → Test Worker** and confirm the displayed routing tiers are Sol/Low, Sol/Medium, and Astra/High as expected.
+3. Test a trivial clarification such as `How far away is the door?`; debug should show Sol / Low only.
+4. Test an ordinary NPC exchange; it should normally remain Sol / Low.
+5. Test a deliberately meaningful NPC scene involving deception, conflicting motives, persuasion, or relationship consequences; debug should show a Low classification pass followed by a Sol / Medium adjudication.
+6. Test several such scenes and verify Astra is not being invoked merely because a scene is dramatic or dangerous.
+7. Export debug data after play and compare call counts/model usage before adjusting thresholds further.
+
+### Known limitations / next checkpoint
+
+- The Low pass is currently responsible for recognizing when a scene deserves Medium reasoning. Real play/debug data should be used to tune this threshold if it under- or over-escalates.
+- Significant scenes incur an extra inexpensive Low classification/adjudication call before the Medium re-adjudication. This is intentional for cost control; it can later be replaced by a robust local router if sufficient patterns emerge.
+- Probability calibration remains provisional.
+- Damage / Penetration / Handling are still design-level concepts and remain a strong candidate for the next simulation-focused iteration.
+
+---
+
+## Version 0.3.2
+Date: 2026-09-25
+
+### Milestone
+Implemented **cost-aware model routing** while keeping authoritative mechanics in local JavaScript. Ordinary play now uses GPT-6 Sol; GPT-6 Astra is reserved for campaign compilation and rare adjudications that genuinely require higher-capability review.
+
+### Model routing
+
+Default AI profiles now live entirely in `index.html`:
+
+```text
+campaign_compile      GPT-6 Astra / high
+adjudicate            GPT-6 Sol / medium
+adjudicate_complex    GPT-6 Astra / high
+assessment             GPT-6 Sol / low
+narrate                GPT-6 Sol / low
+plain/test             GPT-6 Sol / low
+world_generate         GPT-6 Astra / high   (reserved for future major generation work)
+```
+
+Local JavaScript remains authoritative for:
+
+- probability calculation and random sampling
+- campaign/world state storage and validation
+- pending-action commitment state
+- inventory/state updates once validated
+- deterministic resolution gates
+- future damage, penetration, handling, travel, and other simulation mechanics
+
+The model does not roll the engine's probability result.
+
+### Exceptional adjudication escalation
+
+The normal adjudicator is now GPT-6 Sol. Its strict structured response contains three new routing fields:
+
+```text
+complexity
+escalation_recommended
+escalation_reason
+```
+
+Escalation is intended to be rare. Sol is instructed to recommend Astra only when correctness genuinely depends on unusually difficult multi-system interaction, conflicting hidden-state dependencies, complicated multi-actor sequencing, or difficult source/canon interpretation. High stakes, danger, or a low chance of success are explicitly **not** sufficient reasons to escalate.
+
+When escalation is recommended, the browser sends the same authoritative state and player input to the `adjudicate_complex` Astra profile and uses Astra's result as the final adjudication.
+
+### Reduced unnecessary AI calls
+
+Simple responses to a pending action are now handled locally. Examples such as:
+
+```text
+yes
+do it
+fire
+no
+cancel
+hold off
+```
+
+can confirm or cancel a pending action without spending a separate AI request. More complicated responses (for example, `No, I move closer first`) still go through Sol so the new plan can be interpreted correctly.
+
+### Debug/cost visibility
+
+AI debug entries now record the model and logical AI profile used for campaign compilation, adjudication, assessments, escalations, and narration. This makes exported debug files usable for later cost/performance tuning.
+
+### Gateway v1.1.0 — one-time infrastructure update
+
+Gateway v1.0.0 deliberately hard-coded `gpt-6-astra`. Because v0.3.2 routes work between Astra and Sol, one final gateway update is required. Gateway v1.1.0 no longer owns model selection: the authenticated `index.html` request supplies the model while the gateway continues to protect the API key, validate the game token/origin, cap request/output size, force `store:false`, and forward only permitted Responses API fields.
+
+After Gateway v1.1.0 is deployed, **normal Universal RPG development again requires only `index.html` and `audit.md`**. Model routing profiles can be changed in HTML without modifying Cloudflare.
+
+Gateway v1.1.0 requires only these Cloudflare Secrets:
+
+```text
+OPENAI_API_KEY
+GAME_TOKEN
+```
+
+No Runtime Variables are required.
+
+### Validation performed
+
+- Updated embedded JavaScript passed `node --check`.
+- Gateway v1.1.0 source passed `node --check`.
+- Save schema remains version 3; existing v0.3.x saves remain compatible.
+- Structured Output schemas were updated to require the new adjudication complexity/escalation fields.
+- Connection test now requires Gateway `>= 1.1.0` and verifies the ordinary request path through GPT-6 Sol.
+- Campaign compilation continues to use GPT-6 Astra.
+- Probability computation and random sampling remain local and unchanged.
+
+### Recommended validation after deployment
+
+1. Deploy Gateway v1.1.0.
+2. Confirm `/health` reports `gateway_version: 1.1.0` and `client_model_routing: true`.
+3. Upload `index.html` v0.3.2.
+4. Run **Settings → Test Worker**; it should report GPT-6 Sol as the ordinary-turn model and GPT-6 Astra as the campaign compiler.
+5. Create a small test campaign and verify the campaign compilation debug entry used Astra.
+6. Play ordinary clarification, assessment, and narration turns and verify debug entries use Sol.
+7. Test a simple pending confirmation (`yes`) and confirm the debug log records `ai_used:false` for the confirmation itself.
+8. Export debug after several turns and inspect model usage before further tuning.
+
+### Known limitations / next checkpoint
+
+- Escalation quality depends on Sol correctly recognizing genuinely exceptional adjudication. Debug logs should be reviewed before changing the thresholds or rules.
+- Major runtime world-generation routing is reserved but not yet a separate gameplay path.
+- Probability calibration remains provisional.
+- Damage / Penetration / Handling are still design-level concepts and should be implemented in the next simulation-focused iteration rather than delegated to the language model.
+
+---
+
 ## Version 0.3.1
 Date: 2026-09-25
 

@@ -46,7 +46,7 @@
 <body>
 <div class="app" id="app">
   <header>
-    <div class="brand">Universal RPG</div><div class="version">v0.3.1</div>
+    <div class="brand">Universal RPG</div><div class="version">v0.3.2</div>
     <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Not connected</span></div>
     <div class="spacer"></div>
     <button class="btn small" id="newBtn">New Campaign</button>
@@ -86,6 +86,7 @@
     <div class="field full"><label>Worker endpoint</label><input id="workerUrl" value="https://universal-rpg.diabolicdonut.workers.dev" /></div>
     <div class="field full"><label>Game token</label><input id="gameToken" type="password" autocomplete="off" placeholder="Enter GAME_TOKEN" /><div class="help">The token is never placed in this HTML file. It is sent only to your Worker as a Bearer token.</div></div>
     <label class="check full"><input type="checkbox" id="rememberToken" /> Remember token on this device (localStorage). If unchecked it lasts only for this browser tab.</label>
+    <div class="field full help">Cost routing: GPT-6 Sol / Low handles routine referee work, clarification, assessments, ordinary conversation, and routine narration. GPT-6 Sol / Medium handles important NPC decisions, meaningful conversations, deception, negotiation, relationship-changing scenes, hidden-information reasoning, multi-actor scenes, and significant adjudication. GPT-6 Astra / High is reserved for campaign compilation, major world generation, and rare exceptional adjudication. Probability and authoritative state remain local.</div>
   </div>
   <div class="modal-actions"><button class="btn" id="testBtn">Test Worker</button><button class="btn primary" id="settingsSaveBtn">Save</button></div>
 </dialog>
@@ -113,7 +114,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "0.3.1";
+  const APP_VERSION = "0.3.3";
   const SCHEMA_VERSION = 3;
   const STATE_KEY = "universalRpg.state.v0_3";
   const LEGACY_STATE_KEYS = ["universalRpg.state.v0_2", "universalRpg.state.v0_1"];
@@ -123,9 +124,19 @@
 
   // Game/referee configuration intentionally lives in index.html. The Cloudflare
   // Worker is a stable security gateway and does not know Universal RPG rules.
-  const AI_MODEL = "gpt-6-astra";
-  const AI_REASONING_EFFORT = "high";
-  const AI_MAX_OUTPUT_TOKENS = 12000;
+  // Expensive reasoning is reserved for compilation and rare escalations; routine
+  // play uses GPT-6 Sol while deterministic mechanics remain local JavaScript.
+  const AI_PROFILES = Object.freeze({
+    campaign_compile:{model:"gpt-6-astra",reasoning_effort:"high",max_output_tokens:12000},
+    adjudicate:{model:"gpt-6-sol",reasoning_effort:"low",max_output_tokens:5000},
+    adjudicate_medium:{model:"gpt-6-sol",reasoning_effort:"medium",max_output_tokens:6500},
+    adjudicate_complex:{model:"gpt-6-astra",reasoning_effort:"high",max_output_tokens:8000},
+    assessment:{model:"gpt-6-sol",reasoning_effort:"low",max_output_tokens:2500},
+    narrate:{model:"gpt-6-sol",reasoning_effort:"low",max_output_tokens:4500},
+    narrate_medium:{model:"gpt-6-sol",reasoning_effort:"medium",max_output_tokens:5500},
+    plain:{model:"gpt-6-sol",reasoning_effort:"low",max_output_tokens:1000},
+    world_generate:{model:"gpt-6-astra",reasoning_effort:"high",max_output_tokens:12000}
+  });
   const AI_SYSTEM_PROMPT = `You are the AI referee, campaign compiler, and narrator for Universal RPG.
 
 The browser-side Universal RPG engine and supplied campaign/world state are authoritative. Treat established state as canon. Never silently rewrite established facts, inventories, positions, relationships, NPC identities, or campaign rules.
@@ -256,6 +267,9 @@ Keep narration grounded in the established genre, setting, tone, and known facts
         intent_type:{type:"string",enum:["clarify","assess","act","examine","communicate","meta","confirm_pending","cancel_pending"]},
         pending_disposition:{type:"string",enum:["none","confirm","cancel","keep","replace"]},
         commitment:{type:"string",enum:["none","contemplated","committed","immediate"]},
+        complexity:{type:"string",enum:["routine","complex","exceptional"]},
+        escalation_recommended:{type:"boolean"},
+        escalation_reason:{type:"string"},
         action_kind:{type:"string",enum:["move","observe","manipulate","attack","defend","communicate","use","travel","rest","create","other"]},
         action_possible:{type:"boolean"}, meaningful_consequence:{type:"boolean"}, checkpoint_required:{type:"boolean"}, resolution_required:{type:"boolean"},
         deterministic_outcome:{type:"string",enum:["success","failure","none"]}, reason:{type:"string"}, capability_name:{type:"string"},
@@ -274,7 +288,7 @@ Keep narration grounded in the established genre, setting, tone, and known facts
           required:["perceived_difficulty","perceived_factors","apparent_success_stakes","apparent_failure_stakes","uncertainty_note","confidence"], additionalProperties:false
         }
       },
-      required:["intent_summary","intent_type","pending_disposition","commitment","action_kind","action_possible","meaningful_consequence","checkpoint_required","resolution_required","deterministic_outcome","reason","capability_name","capability_level","difficulty","factors","stakes","time_cost_hint","narration","updates","npc_actions","assessment"],
+      required:["intent_summary","intent_type","pending_disposition","commitment","complexity","escalation_recommended","escalation_reason","action_kind","action_possible","meaningful_consequence","checkpoint_required","resolution_required","deterministic_outcome","reason","capability_name","capability_level","difficulty","factors","stakes","time_cost_hint","narration","updates","npc_actions","assessment"],
       additionalProperties:false
     },
     assessment:{type:"object",properties:{message:{type:"string"}},required:["message"],additionalProperties:false},
@@ -288,7 +302,7 @@ Keep narration grounded in the established genre, setting, tone, and known facts
   function outputFormatFor(mode){
     const schema=STRUCTURED_SCHEMAS[mode];
     if(!schema) return null;
-    return {type:"json_schema",name:`universal_rpg_${mode}_v031`,strict:true,schema};
+    return {type:"json_schema",name:`universal_rpg_${mode}_v032`,strict:true,schema};
   }
 
   const CAPABILITY = { untrained:25, novice:35, familiar:45, competent:55, skilled:65, expert:75, master:85, legendary:95 };
@@ -460,14 +474,20 @@ Keep narration grounded in the established genre, setting, tone, and known facts
     return null;
   }
 
-  async function callWorker(input,mode="plain"){
+  function aiProfileFor(mode,profileName=null){
+    const key=profileName||mode||"plain";
+    return {name:key,...(AI_PROFILES[key]||AI_PROFILES.plain)};
+  }
+
+  async function callWorker(input,mode="plain",profileName=null){
     if(!token()) throw new Error("Game token is not configured. Open Settings first.");
+    const profile=aiProfileFor(mode,profileName);
     const request={
-      model:AI_MODEL,
+      model:profile.model,
       instructions:AI_SYSTEM_PROMPT,
       input,
-      reasoning:{effort:AI_REASONING_EFFORT},
-      max_output_tokens:AI_MAX_OUTPUT_TOKENS,
+      reasoning:{effort:profile.reasoning_effort},
+      max_output_tokens:profile.max_output_tokens,
       store:false
     };
     const format=outputFormatFor(mode);
@@ -497,7 +517,8 @@ Keep narration grounded in the established genre, setting, tone, and known facts
       ok:true,
       text,
       data:structuredData,
-      model:apiResult.model||AI_MODEL,
+      model:apiResult.model||profile.model,
+      ai_profile:profile.name,
       response_id:apiResult.id||null,
       status:apiResult.status||"completed",
       usage:apiResult.usage||null,
@@ -522,7 +543,7 @@ Keep narration grounded in the established genre, setting, tone, and known facts
   }
 
   function compilerPrompt(form){
-    return `UNIVERSAL RPG CAMPAIGN COMPILER — v0.3
+    return `UNIVERSAL RPG CAMPAIGN COMPILER — v0.3.2
 
 Compile the user's campaign request into a compact playable starting state. The output structure is enforced by the API schema; focus on correct content rather than explaining the schema.
 
@@ -543,9 +564,9 @@ USER REQUEST:
 ${JSON.stringify(form,null,2)}`;
   }
 
-  function adjudicationPrompt(playerText){
+  function adjudicationPrompt(playerText,reviewTier="routine"){
     const pending=state.pending_action?JSON.stringify({intent_summary:state.pending_action.intent_summary,original_text:state.pending_action.original_text,assessment_message:state.pending_action.assessment_message},null,2):"NONE";
-    return `UNIVERSAL RPG — INTENT & ADJUDICATION PHASE v0.3
+    return `UNIVERSAL RPG — INTENT & ADJUDICATION PHASE v0.3.3
 
 Classify the player's message before resolving anything. The player may be asking for clarification, asking for a risk assessment, proposing/committing to an action, examining something in-world, communicating, or speaking meta-game.
 
@@ -565,6 +586,14 @@ Checkpoint rules:
 - If an in-world action has meaningful foreseeable consequences and commitment is not immediate, checkpoint_required=true. Do not perform it yet.
 - This includes guaranteed actions with meaningful costs (for example breaking a window that will certainly make noise).
 - If there is no meaningful consequence, resolve naturally without a checkpoint.
+
+AI routing / complexity:
+- complexity=routine for clarification, assessment, movement, observation, atmosphere, ordinary conversation, simple NPC reactions, straightforward actions, and scenes where only a few obvious facts need to be reconciled.
+- complexity=complex for meaningful NPC decisions, persuasion/negotiation, arguments, deception, relationship-changing scenes, multiple important NPCs interacting, hidden-information reasoning, conflicting NPC goals/loyalties, complicated tactical choices, or any scene where several established facts materially constrain what an NPC should decide or say.
+- complexity=exceptional only when correct adjudication genuinely depends on unusually difficult multi-system interaction, many conflicting hidden-state dependencies, complicated multi-actor sequencing, difficult source/canon reconciliation, or similarly rare reasoning burdens.
+- escalation_recommended=true only for exceptional cases where GPT-6 Astra review is materially likely to change correctness. High stakes, emotional importance, danger, or a low success chance alone are NOT reasons to use Astra.
+- escalation_reason must briefly state why the selected complexity tier is appropriate.
+${reviewTier==="medium"?'- This request has been elevated to GPT-6 Sol / Medium. Perform the full adjudication at this tier. Recommend Astra only if the case is truly exceptional.\n':''}${reviewTier==="astra"?'- This request has already been escalated to GPT-6 Astra / High. Perform the final adjudication yourself and set escalation_recommended=false.\n':''}
 
 Probability rules:
 - resolution_required=true only when the outcome is genuinely uncertain AND the difference between success/failure matters.
@@ -591,7 +620,7 @@ ${playerText}`;
   }
 
   function assessmentPrompt(playerText,adj,preview,requiresConfirmation){
-    return `UNIVERSAL RPG — PLAYER-FACING ASSESSMENT v0.3
+    return `UNIVERSAL RPG — PLAYER-FACING ASSESSMENT v0.3.3
 
 Give the player a concise, natural referee assessment before any action is resolved. Use only the CHARACTER-KNOWN assessment data below. Do not reveal numeric probabilities, hidden factors, hidden statistics, or objective difficulty. Explain the important visible reasons in ordinary language.
 
@@ -612,7 +641,7 @@ requires_confirmation: ${requiresConfirmation}`;
   }
 
   function outcomePrompt(playerText,adjudication,resolution){
-    return `UNIVERSAL RPG — OUTCOME & NARRATION PHASE v0.3
+    return `UNIVERSAL RPG — OUTCOME & NARRATION PHASE v0.3.3
 
 The resolution engine has already fixed the action outcome. It may be deterministic or probabilistic. Accept the supplied result exactly. Do not reroll it, reverse it, or alter its stated magnitude.
 
@@ -766,7 +795,7 @@ ${JSON.stringify(resolution,null,2)}`;
       state.campaign=compiled.campaign; state.player=compiled.player; state.world=compiled.world; state.npcs=compiled.npcs; state.threads=compiled.threads;
       addMessage("narrator",compiled.opening_narration);
       addEvent("campaign_compiled",{campaign:state.campaign.title,npc_count:state.npcs.length,thread_count:state.threads.length,gateway_version:api.gateway_version});
-      addDebug({phase:"campaign_compile",request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,structured:true});
+      addDebug({phase:"campaign_compile",model:api.model,ai_profile:api.ai_profile,request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,structured:true});
       persist(); el.campaignDialog.close();
     }catch(e){ alert("Campaign creation failed: "+e.message); setStatus("bad","Campaign creation failed"); }
     finally{setBusy(false);}
@@ -789,6 +818,10 @@ ${JSON.stringify(resolution,null,2)}`;
     return {message:api.data.message,preview,api};
   }
 
+  function narrationProfileFor(adj){
+    return adj?.complexity==="routine" ? "narrate" : "narrate_medium";
+  }
+
   async function resolveCommittedAction(playerText,adj){
     state.turn+=1;
     state.pending_action=null;
@@ -796,12 +829,12 @@ ${JSON.stringify(resolution,null,2)}`;
       if(adj.checkpoint_required){
         setStatus("","Resolving consequence...");
         const fixed={deterministic:true,success:adj.deterministic_outcome==="success",magnitude:"ordinary",outcome:adj.deterministic_outcome,stakes:adj.stakes};
-        const oApi=await callWorker(outcomePrompt(playerText,adj,fixed),"narrate");
+        const oApi=await callWorker(outcomePrompt(playerText,adj,fixed),"narrate",narrationProfileFor(adj));
         const out=oApi.data;
         const updateResult=applyUpdates(out.updates);
         addMessage("narrator",out.narration||"The action resolves.");
         addEvent("deterministic_resolution",{intent:adj.intent_summary,intent_type:adj.intent_type,action_kind:adj.action_kind,outcome:adj.deterministic_outcome,reason:adj.reason,time_cost_hint:adj.time_cost_hint,updates:updateResult.summary,npc_actions:out.npc_actions,consequence_summary:out.consequence_summary});
-        addDebug({phase:"deterministic_narration",request_id:oApi.openai_request_id,response_id:oApi.response_id,usage:oApi.usage});
+        addDebug({phase:"deterministic_narration",model:oApi.model,ai_profile:oApi.ai_profile,request_id:oApi.openai_request_id,response_id:oApi.response_id,usage:oApi.usage});
       }else{
         const updateResult=applyUpdates(adj.updates);
         addMessage("narrator",adj.narration||"The action resolves.");
@@ -814,12 +847,12 @@ ${JSON.stringify(resolution,null,2)}`;
     addEvent("probability_resolution",{intent:adj.intent_summary,action_kind:adj.action_kind,adjudication:adj,result});
     addDebug({phase:"probability",result});
     setStatus("","Resolving outcome...");
-    const oApi=await callWorker(outcomePrompt(playerText,adj,{success:result.success,magnitude:result.magnitude,stakes:adj.stakes}),"narrate");
+    const oApi=await callWorker(outcomePrompt(playerText,adj,{success:result.success,magnitude:result.magnitude,stakes:adj.stakes}),"narrate",narrationProfileFor(adj));
     const out=oApi.data;
     const updateResult=applyUpdates(out.updates);
     addMessage("narrator",out.narration||(result.success?"You succeed.":"You fail."));
     addEvent("narrated_outcome",{success:result.success,magnitude:result.magnitude,consequence_summary:out.consequence_summary,updates:updateResult.summary,npc_actions:out.npc_actions});
-    addDebug({phase:"narration",request_id:oApi.openai_request_id,response_id:oApi.response_id,usage:oApi.usage});
+    addDebug({phase:"narration",model:oApi.model,ai_profile:oApi.ai_profile,request_id:oApi.openai_request_id,response_id:oApi.response_id,usage:oApi.usage});
   }
 
   async function confirmPending(playerText){
@@ -830,15 +863,61 @@ ${JSON.stringify(resolution,null,2)}`;
     await resolveCommittedAction(pending.original_text,pending.adjudication);
   }
 
+  function simplePendingDisposition(text){
+    const t=String(text||"").trim().toLowerCase().replace(/[.!?]+$/g,"").trim();
+    const confirms=new Set(["yes","yeah","yep","do it","go ahead","proceed","fire","take the shot","i do it","i'll do it","continue"]);
+    const cancels=new Set(["no","nope","cancel","stop","hold off","don't","do not"]);
+    if(confirms.has(t)) return "confirm";
+    if(cancels.has(t)) return "cancel";
+    return null;
+  }
+
   async function playTurn(){
     const text=el.playerInput.value.trim(); if(!text||busy||!state.campaign) return;
     const before=deepClone(state);
     el.playerInput.value="";
     addMessage("player",text); render(); setBusy(true,"Interpreting...");
     try{
-      const aApi=await callWorker(adjudicationPrompt(text),"adjudicate");
-      const adj=aApi.data;
-      addDebug({phase:"adjudication",request_id:aApi.openai_request_id,response_id:aApi.response_id,usage:aApi.usage,adjudication:adj,pending_before:before.pending_action?.intent_summary||null});
+      if(state.pending_action){
+        const localDisposition=simplePendingDisposition(text);
+        if(localDisposition==="confirm"){
+          addDebug({phase:"pending_local_confirm",ai_used:false,pending_before:before.pending_action?.intent_summary||null});
+          await confirmPending(text);
+          persist(); return;
+        }
+        if(localDisposition==="cancel"){
+          addEvent("pending_action_cancelled",{intent:state.pending_action.intent_summary,response:text,local:true});
+          state.pending_action=null;
+          addMessage("narrator","You hold off.");
+          addDebug({phase:"pending_local_cancel",ai_used:false,pending_before:before.pending_action?.intent_summary||null});
+          persist(); return;
+        }
+      }
+
+      let aApi=await callWorker(adjudicationPrompt(text,"routine"),"adjudicate");
+      let adj=aApi.data;
+      addDebug({phase:"adjudication",model:aApi.model,ai_profile:aApi.ai_profile,request_id:aApi.openai_request_id,response_id:aApi.response_id,usage:aApi.usage,adjudication:adj,pending_before:before.pending_action?.intent_summary||null});
+
+      // Tiered referee routing: routine Sol/Low -> significant Sol/Medium -> exceptional Astra/High.
+      // The first pass is cheap and is final for ordinary play. Important NPC/social/hidden-state
+      // scenes are re-adjudicated at Medium. Astra remains the rare correctness escape hatch.
+      if(adj.complexity==="complex" || adj.complexity==="exceptional" || adj.escalation_recommended){
+        addEvent("ai_adjudication_elevated",{intent:adj.intent_summary,complexity:adj.complexity,reason:adj.escalation_reason,from_profile:aApi.ai_profile,to_profile:"adjudicate_medium"});
+        setStatus("","Applying deeper referee reasoning...");
+        const mediumApi=await callWorker(adjudicationPrompt(text,"medium"),"adjudicate","adjudicate_medium");
+        adj=mediumApi.data;
+        aApi=mediumApi;
+        addDebug({phase:"adjudication_medium",model:aApi.model,ai_profile:aApi.ai_profile,request_id:aApi.openai_request_id,response_id:aApi.response_id,usage:aApi.usage,adjudication:adj,pending_before:before.pending_action?.intent_summary||null});
+      }
+
+      if(adj.complexity==="exceptional" || adj.escalation_recommended){
+        addEvent("ai_adjudication_escalated",{intent:adj.intent_summary,complexity:adj.complexity,reason:adj.escalation_reason,from_profile:aApi.ai_profile,to_profile:"adjudicate_complex"});
+        setStatus("","Escalating exceptional adjudication...");
+        const escalatedApi=await callWorker(adjudicationPrompt(text,"astra"),"adjudicate","adjudicate_complex");
+        adj=escalatedApi.data;
+        aApi=escalatedApi;
+        addDebug({phase:"adjudication_escalated",model:aApi.model,ai_profile:aApi.ai_profile,request_id:aApi.openai_request_id,response_id:aApi.response_id,usage:aApi.usage,adjudication:adj,pending_before:before.pending_action?.intent_summary||null});
+      }
 
       if(state.pending_action){
         if(adj.pending_disposition==="confirm"){
@@ -856,7 +935,7 @@ ${JSON.stringify(resolution,null,2)}`;
         if(adj.pending_disposition==="keep"){
           assertNonTurnOutput(adj);
           if(adj.intent_type==="assess" && adj.resolution_required){
-            const a=await makeAssessmentMessage(text,adj,false); addMessage("narrator",a.message); addDebug({phase:"assessment",preview:a.preview,request_id:a.api.openai_request_id});
+            const a=await makeAssessmentMessage(text,adj,false); addMessage("narrator",a.message); addDebug({phase:"assessment",model:a.api.model,ai_profile:a.api.ai_profile,preview:a.preview,request_id:a.api.openai_request_id,usage:a.api.usage});
           }else addMessage("narrator",adj.narration||"The referee clarifies the situation.");
           persist(); return;
         }
@@ -877,7 +956,7 @@ ${JSON.stringify(resolution,null,2)}`;
         const a=await makeAssessmentMessage(text,adj,false);
         addMessage("narrator",a.message);
         addEvent("assessment_only",{intent:adj.intent_summary,preview_band:a.preview.likelihood_band,confidence:adj.assessment.confidence});
-        addDebug({phase:"assessment",preview:a.preview,request_id:a.api.openai_request_id});
+        addDebug({phase:"assessment",model:a.api.model,ai_profile:a.api.ai_profile,preview:a.preview,request_id:a.api.openai_request_id,usage:a.api.usage});
         persist(); return;
       }
 
@@ -897,7 +976,7 @@ ${JSON.stringify(resolution,null,2)}`;
         };
         addMessage("narrator",a.message);
         addEvent("pending_action_created",{intent:adj.intent_summary,action_kind:adj.action_kind,perceived_likelihood:a.preview.likelihood_band,meaningful_consequence:adj.meaningful_consequence});
-        addDebug({phase:"assessment_checkpoint",preview:a.preview,request_id:a.api.openai_request_id});
+        addDebug({phase:"assessment_checkpoint",model:a.api.model,ai_profile:a.api.ai_profile,preview:a.preview,request_id:a.api.openai_request_id,usage:a.api.usage});
         persist(); return;
       }
 
@@ -918,9 +997,9 @@ ${JSON.stringify(resolution,null,2)}`;
       catch(e){ throw new Error("Health request could not reach the Worker. Check ALLOWED_ORIGINS/CORS and Worker URL. "+e.message); }
       const hd=await h.json().catch(()=>null);
       if(!h.ok||!hd?.ok) throw new Error(hd?.error||"Health endpoint did not report ready.");
-      if(!versionAtLeast(hd.gateway_version,"1.0.0")) throw new Error(`Gateway ${hd.gateway_version||"unknown"} is too old. Deploy the stable Universal RPG Gateway v1.0.0.`);
+      if(!versionAtLeast(hd.gateway_version,"1.1.0")) throw new Error(`Gateway ${hd.gateway_version||"unknown"} is too old for model routing. Deploy the stable Universal RPG Gateway v1.1.0.`);
       const api=await callWorker("Reply with exactly: Universal RPG connection successful.","plain");
-      alert(`Gateway health: ready\nGateway version: ${hd.gateway_version||"unknown"}\nModel: ${api.model}\nOpenAI: ${api.text.trim()}`);
+      alert(`Gateway health: ready\nGateway version: ${hd.gateway_version||"unknown"}\nRoutine referee: ${AI_PROFILES.adjudicate.model} / ${AI_PROFILES.adjudicate.reasoning_effort}\nImportant NPC/referee: ${AI_PROFILES.adjudicate_medium.model} / ${AI_PROFILES.adjudicate_medium.reasoning_effort}\nRoutine narration: ${AI_PROFILES.narrate.model} / ${AI_PROFILES.narrate.reasoning_effort}\nSignificant narration: ${AI_PROFILES.narrate_medium.model} / ${AI_PROFILES.narrate_medium.reasoning_effort}\nCampaign compiler: ${AI_PROFILES.campaign_compile.model} / ${AI_PROFILES.campaign_compile.reasoning_effort}\nOpenAI: ${api.text.trim()}`);
       setStatus("good","Connected");
     }catch(e){ alert("Connection test failed: "+e.message); setStatus("bad","Connection failed"); }
     finally{setBusy(false);}
