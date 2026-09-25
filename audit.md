@@ -1,4 +1,293 @@
+## Version 0.4.1
+Date: 2026-09-25
+
+### Milestone
+Added a dedicated troubleshooting/debug export and an optional player-facing **Hints** system. No Cloudflare Worker changes are required.
+
+### Debug Export v2
+The existing **Export Debug** control has been expanded into a troubleshooting package intended to be shared when a campaign behaves incorrectly.
+
+The export now includes:
+- complete authoritative save state, including hidden referee/NPC data
+- current app, save-schema, and Probability Builder versions
+- current turn and state revision
+- pending-action summary
+- hint preferences
+- entity/log counts
+- current AI routing profiles
+- recent debug records and recent event records
+- recent system/error transcript messages
+- Probability Builder calibration report and self-test
+- browser/runtime information useful for reproducing client issues
+- the configured Worker URL
+- a live `/health` snapshot from the Cloudflare gateway when reachable
+- whether a game token is present and whether it is stored persistently
+
+Security rule: the debug file **never exports the GAME_TOKEN itself or the OpenAI API key**. It does contain hidden campaign information and therefore carries an explicit spoiler warning before export.
+
+Debug filenames now include the turn number and an ISO timestamp so multiple reports from the same turn do not overwrite one another accidentally.
+
+### Optional Hints System
+Added a **Hints** card to the campaign sidebar. Hints are disabled by default and may be switched on or off at any time without affecting campaign state or advancing time.
+
+When enabled, the player can choose one of three assistance levels:
+- **Gentle nudge** — points toward a relevant known detail or unresolved situation without directing the player to a specific answer.
+- **Possible options** — offers several plausible actions or questions based on current known information, without ranking one as the correct choice.
+- **Direct suggestion** — gives one or two concrete ways to get unstuck and briefly explains why they are reasonable.
+
+Hints use **GPT-6 Sol / Low** and are treated as out-of-character assistance rather than in-world actions.
+
+### Hidden-information protection
+The hint model does not receive the full authoritative state. A dedicated player-facing context builder strips hidden information before the hint request is created. Hint context includes only:
+- public campaign information
+- protagonist public capabilities, inventory, condition, and learned knowledge
+- current/known place public descriptions
+- public resources and world facts
+- NPC public descriptions/status
+- visible open situations
+- recent player/referee conversation
+- the visible assessment for a pending action, if one exists
+
+It explicitly excludes:
+- NPC hidden nature, goals, loyalties, fears, secrets, intentions, and private knowledge
+- hidden world facts
+- hidden place facts
+- hidden threads
+- objective probabilities and RNG information
+- undiscovered clues or future events
+
+Hints cannot mutate the world, advance time, trigger NPC activity, resolve uncertainty, or establish new canon. Hint messages are marked separately in the transcript and are excluded from normal referee context so suggestions do not later become mistaken for established events.
+
+### Persistence
+Hint enabled/disabled state and selected hint style are saved with the campaign. Existing schema-v3 saves migrate automatically with hints disabled and the Gentle Nudge style selected.
+
+### Validation performed
+- Embedded JavaScript syntax checked with Node.js.
+- Confirmed all runtime version labels/prompts report v0.4.1.
+- Existing save-schema version remains 3; no destructive migration is required.
+- Existing Cloudflare Gateway v1.1 remains compatible; no Worker update is necessary.
+- Hint messages are excluded from authoritative AI context.
+- Debug export explicitly records token presence without serializing the token value.
+
+### Recommended next test
+1. Load an existing campaign and confirm Hints defaults to Off.
+2. Turn Hints On and request each of the three hint styles.
+3. Verify requesting a hint does not increment Turn or Revision.
+4. In a mystery/horror test, confirm hints do not reveal a known hidden NPC secret or hidden fact.
+5. Export Debug and confirm the file contains gateway health, routing, recent logs, probability diagnostics, and full save state, but no GAME_TOKEN value.
+6. Send a debug export after any reproducible gameplay problem so the failure can be inspected directly.
+
+---
+
 # Universal RPG — Audit Log
+
+## Version 0.4.0
+Date: 2026-09-25
+
+### Milestone
+Implemented the first calibrated **Universal Probability Builder and Outcome Engine**. The browser now owns the probability math, semantic calibration, circumstance stacking limits, random sampling, and degree-of-outcome calculation. The language model classifies fictional facts into bounded categories but does not invent percentages or roll outcomes.
+
+### Probability Builder v1.0
+The local engine now separates:
+
+```text
+Capability
++ intrinsic task difficulty
++ bounded circumstances
+= objective success probability
+```
+
+The calibration anchor is:
+
+```text
+Competent character + Standard task + neutral circumstances ≈ 70% success
+```
+
+Capability levels remain:
+
+```text
+untrained
+novice
+familiar
+competent
+skilled
+expert
+master
+legendary
+```
+
+Difficulty levels remain:
+
+```text
+routine
+easy
+standard
+difficult
+formidable
+extreme
+```
+
+Difficulty now explicitly means the **intrinsic demand of the task under neutral conditions**. Circumstances are no longer supposed to be baked into difficulty and then counted again as modifiers.
+
+### Calibration anchors
+With no circumstantial factors, the current v1.0 curve yields approximately:
+
+```text
+Untrained  vs Standard    30.9%
+Familiar   vs Standard    57.4%
+Competent  vs Standard    70.0%
+Skilled    vs Standard    80.2%
+Expert     vs Standard    87.5%
+
+Competent  vs Easy        83.2%
+Competent  vs Difficult   52.4%
+Competent  vs Formidable  34.2%
+Expert     vs Formidable  61.0%
+```
+
+Routine actions should still normally bypass probability entirely when failure is not meaningful. These percentages apply only when the Resolution Gate determines that an uncertain, consequential resolution is actually needed.
+
+### Circumstance categories
+Every situational factor must now belong to exactly one bounded category:
+
+```text
+opposition
+equipment
+preparation
+environment
+condition
+assistance
+time_pressure
+scale
+positioning
+information
+other
+```
+
+Factor strength remains semantic rather than numeric at the AI boundary:
+
+```text
+minor advantage / hindrance
+significant advantage / hindrance
+major advantage / hindrance
+```
+
+The AI identifies the category and qualitative strength. Local JavaScript translates that classification into the calibrated math.
+
+### Anti-stacking controls
+To prevent the referee from inflating probabilities by restating the same circumstance several ways, factor effects are capped both per category and across the full action. The adjudication prompt now explicitly requires one factor per distinct fictional fact and prohibits double-counting the same fact in both intrinsic difficulty and circumstances.
+
+### Objective versus perceived probability
+The two-model structure is now explicit:
+
+```text
+OBJECTIVE MODEL
+Established reality, including hidden facts that physically matter
+→ used for actual resolution
+
+PERCEIVED MODEL
+Only what the protagonist can reasonably know or infer
+→ used for pre-commitment risk assessment
+```
+
+The player-facing likelihood is also tempered by assessment confidence. High/moderate confidence preserves the calculated semantic band. Low confidence softens the language one step toward uncertainty. Unknown confidence reports the situation as uncertain rather than pretending to precision.
+
+### Stable likelihood bands
+Internal probabilities are translated into semantic bands for referee wording:
+
+```text
+98%+      essentially certain
+90–97%    very likely
+75–89%    good
+60–74%    favorable
+40–59%    uncertain
+25–39%    not good
+10–24%    unlikely
+2–9%      very unlikely
+<2%       nearly impossible
+```
+
+These are not displayed as percentages during normal play. The referee receives the semantic band and causal factors and expresses them naturally.
+
+### Impossible is not low probability
+Scale and physical possibility are now explicitly distinguished from difficult checks. If the intended effect is impossible under established reality, adjudication must set `action_possible=false` and avoid probabilistic resolution. A handgun cannot acquire a 0.5% chance to penetrate tank armor merely because the engine has a probability floor.
+
+### Outcome magnitude
+The same cryptographically generated random sample now determines both binary success/failure and degree of outcome through a calibrated logistic performance margin. Probabilistic outcomes can be:
+
+```text
+marginal_success
+solid_success
+strong_success
+exceptional_success
+
+marginal_failure
+failure
+severe_failure
+exceptional_failure
+```
+
+This replaces the earlier coarse `ordinary / strong / exceptional` success-only classification. Outcome magnitude is passed to the narrator as authoritative and may not be rerolled or reversed.
+
+### Debugging and validation
+Debug exports now include:
+
+- Probability Builder version
+- calibration anchors
+- factor-to-logit mapping
+- category and total factor caps
+- probability floor/ceiling
+- likelihood bands
+- automated probability self-test result
+- objective probability calculation records
+- applied factor categories and capped contributions
+- random sample
+- logistic performance margin
+- final success/failure and magnitude
+
+The developer snapshot now reports `probability_engine: "1.0"`.
+
+### AI adjudication guidance
+The referee prompt now defines capability and difficulty semantics, requires factor categories, prohibits factor duplication, distinguishes intrinsic task demand from temporary circumstances, treats active opposition as a bounded opposition factor, and tells the AI that local JavaScript—not the model—owns probability and RNG.
+
+### Compatibility
+- Save schema remains version 3. Existing v0.3.x saves remain compatible.
+- Existing pending actions lacking v0.4 factor categories fall back to the `other` category when confirmed after upgrade.
+- Gateway v1.1.0 remains compatible. **No Cloudflare Worker update is required.**
+- Existing GPT-6 Sol Low → Sol Medium → Astra High routing is unchanged.
+
+### Validation performed
+- Confirmed visible and internal application version strings are v0.4.0.
+- Confirmed strict structured-output schema requires factor categories for new adjudications.
+- Confirmed Competent vs Standard anchor resolves to 70%.
+- Confirmed increasing capability raises success probability.
+- Confirmed increasing intrinsic difficulty lowers success probability.
+- Confirmed advantages increase and hindrances decrease probability.
+- Confirmed category and total factor caps are applied locally.
+- Confirmed perceived likelihood is confidence-filtered without changing the objective probability.
+- Confirmed outcome magnitude is derived from the same RNG sample as success/failure.
+- Confirmed debug export includes calibration and self-test data.
+- JavaScript syntax validation performed after build.
+
+### Known limitations / next step
+Probability calibration is now mechanically stable enough to support domain-specific consequences, but the current engine still treats the resolved action generically. The next major implementation should be **Combat & Injury v0.5**, including the proposed weapon profile:
+
+```text
+Damage
+Penetration
+Range
+Handling
+Scale
+Traits
+```
+
+and the pipeline:
+
+```text
+hit → coverage/protection → penetration → injury distribution → conditions/consequences
+```
+
+Weapon Handling should remain contextual rather than a permanent accuracy bonus.
 
 ## Version 0.3.3
 Date: 2026-09-25

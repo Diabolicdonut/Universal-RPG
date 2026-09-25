@@ -25,10 +25,11 @@
   main{min-width:0;min-height:0;display:grid;grid-template-rows:1fr auto}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px;box-shadow:var(--shadow)}
   .card h3{margin:0 0 8px;font-size:.9rem;letter-spacing:.05em;text-transform:uppercase;color:#cbd5df}
+  .sidebar-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:9px}.sidebar-select{width:100%;background:var(--input);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:7px 8px}.hint-state{font-size:.76rem;color:var(--muted);line-height:1.4;margin-top:7px}.hint-state.on{color:#d8c27a}
   .kv{font-size:.87rem;line-height:1.45}.kv .label{color:var(--muted)}
   .tags{display:flex;flex-wrap:wrap;gap:6px}.tag{font-size:.75rem;border:1px solid var(--line);background:#111821;border-radius:999px;padding:4px 7px;color:#c8d0d8}
   .transcript{overflow:auto;padding:22px clamp(14px,4vw,48px)}
-  .message{max-width:880px;margin:0 auto 18px;line-height:1.62}.message .who{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:5px}.message.player{padding-left:18px;border-left:2px solid #4d5d73}.message.system{color:#cbd5df;font-style:italic}.message p{margin:.45em 0;white-space:pre-wrap}
+  .message{max-width:880px;margin:0 auto 18px;line-height:1.62}.message .who{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:5px}.message.player{padding-left:18px;border-left:2px solid #4d5d73}.message.system{color:#cbd5df;font-style:italic}.message.hint{padding:12px 14px;border:1px solid #665a34;border-radius:10px;background:rgba(214,179,93,.07)}.message.hint .who{color:#d6b35d}.message p{margin:.45em 0;white-space:pre-wrap}
   .composer{border-top:1px solid var(--line);padding:12px;background:rgba(13,17,23,.96)}
   .composer-inner{max-width:920px;margin:auto;display:grid;grid-template-columns:1fr auto;gap:10px;align-items:end}
   .pending-note{max-width:920px;margin:0 auto 8px;color:#e7c76d;font-size:.8rem;line-height:1.35}
@@ -46,7 +47,7 @@
 <body>
 <div class="app" id="app">
   <header>
-    <div class="brand">Universal RPG</div><div class="version">v0.3.3</div>
+    <div class="brand">Universal RPG</div><div class="version">v0.4.1</div>
     <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Not connected</span></div>
     <div class="spacer"></div>
     <button class="btn small" id="newBtn">New Campaign</button>
@@ -114,7 +115,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "0.3.3";
+  const APP_VERSION = "0.4.1";
   const SCHEMA_VERSION = 3;
   const STATE_KEY = "universalRpg.state.v0_3";
   const LEGACY_STATE_KEYS = ["universalRpg.state.v0_2", "universalRpg.state.v0_1"];
@@ -125,13 +126,14 @@
   // Game/referee configuration intentionally lives in index.html. The Cloudflare
   // Worker is a stable security gateway and does not know Universal RPG rules.
   // Expensive reasoning is reserved for compilation and rare escalations; routine
-  // play uses GPT-6 Sol while deterministic mechanics remain local JavaScript.
+  // play uses GPT-6 Sol while probability, RNG, and deterministic mechanics remain local JavaScript.
   const AI_PROFILES = Object.freeze({
     campaign_compile:{model:"gpt-6-astra",reasoning_effort:"high",max_output_tokens:12000},
     adjudicate:{model:"gpt-6-sol",reasoning_effort:"low",max_output_tokens:5000},
     adjudicate_medium:{model:"gpt-6-sol",reasoning_effort:"medium",max_output_tokens:6500},
     adjudicate_complex:{model:"gpt-6-astra",reasoning_effort:"high",max_output_tokens:8000},
     assessment:{model:"gpt-6-sol",reasoning_effort:"low",max_output_tokens:2500},
+    hint:{model:"gpt-6-sol",reasoning_effort:"low",max_output_tokens:2200},
     narrate:{model:"gpt-6-sol",reasoning_effort:"low",max_output_tokens:4500},
     narrate_medium:{model:"gpt-6-sol",reasoning_effort:"medium",max_output_tokens:5500},
     plain:{model:"gpt-6-sol",reasoning_effort:"low",max_output_tokens:1000},
@@ -205,8 +207,13 @@ Keep narration grounded in the established genre, setting, tone, and known facts
     required:["npc_id","action","player_visible","hidden_reason"], additionalProperties:false
   };
   const FACTOR_SCHEMA = {
-    type:"object", properties:{ label:{type:"string"}, impact:{type:"string",enum:["major_advantage","significant_advantage","minor_advantage","minor_hindrance","significant_hindrance","major_hindrance"]} },
-    required:["label","impact"], additionalProperties:false
+    type:"object",
+    properties:{
+      category:{type:"string",enum:["opposition","equipment","preparation","environment","condition","assistance","time_pressure","scale","positioning","information","other"]},
+      label:{type:"string"},
+      impact:{type:"string",enum:["major_advantage","significant_advantage","minor_advantage","minor_hindrance","significant_hindrance","major_hindrance"]}
+    },
+    required:["category","label","impact"], additionalProperties:false
   };
   const UPDATES_SCHEMA = {
     type:"object",
@@ -292,6 +299,7 @@ Keep narration grounded in the established genre, setting, tone, and known facts
       additionalProperties:false
     },
     assessment:{type:"object",properties:{message:{type:"string"}},required:["message"],additionalProperties:false},
+    hint:{type:"object",properties:{message:{type:"string"}},required:["message"],additionalProperties:false},
     narrate:{
       type:"object",
       properties:{narration:{type:"string"},updates:UPDATES_SCHEMA,npc_actions:{type:"array",items:NPC_ACTION_SCHEMA},consequence_summary:{type:"string"}},
@@ -302,15 +310,37 @@ Keep narration grounded in the established genre, setting, tone, and known facts
   function outputFormatFor(mode){
     const schema=STRUCTURED_SCHEMAS[mode];
     if(!schema) return null;
-    return {type:"json_schema",name:`universal_rpg_${mode}_v032`,strict:true,schema};
+    return {type:"json_schema",name:`universal_rpg_${mode}_v041`,strict:true,schema};
   }
 
-  const CAPABILITY = { untrained:25, novice:35, familiar:45, competent:55, skilled:65, expert:75, master:85, legendary:95 };
-  const DIFFICULTY = { routine:20, easy:35, standard:50, difficult:65, formidable:80, extreme:95 };
-  const FACTOR_SHIFT = {
-    major_advantage:-20, significant_advantage:-10, minor_advantage:-5,
-    minor_hindrance:5, significant_hindrance:10, major_hindrance:20
-  };
+  // Probability Builder v1.0 — calibrated semantic resolution model.
+  // The AI classifies fictional facts into bounded semantic categories; local JS owns the math and RNG.
+  // Baseline anchor: a Competent character attempting a Standard task under neutral conditions succeeds ~70% of the time.
+  const PROBABILITY_ENGINE_VERSION = "1.0";
+  const CAPABILITY_INDEX = Object.freeze({ untrained:0, novice:1, familiar:2, competent:3, skilled:4, expert:5, master:6, legendary:7 });
+  const DIFFICULTY_INDEX = Object.freeze({ routine:0, easy:1, standard:2, difficult:3, formidable:4, extreme:5 });
+  const BASELINE_LOGIT = Math.log(.70/.30);
+  const CAPABILITY_STEP_LOGIT = .55;
+  const DIFFICULTY_STEP_LOGIT = .75;
+  const FACTOR_LOGIT = Object.freeze({
+    major_advantage:1.10, significant_advantage:.65, minor_advantage:.30,
+    minor_hindrance:-.30, significant_hindrance:-.65, major_hindrance:-1.10
+  });
+  const FACTOR_CATEGORY_CAP = 1.25;
+  const TOTAL_FACTOR_CAP = 2.25;
+  const PROBABILITY_FLOOR = .005;
+  const PROBABILITY_CEILING = .995;
+  const LIKELIHOOD_BANDS = Object.freeze([
+    {min:.98,name:"essentially_certain"},
+    {min:.90,name:"very_likely"},
+    {min:.75,name:"good"},
+    {min:.60,name:"favorable"},
+    {min:.40,name:"uncertain"},
+    {min:.25,name:"not_good"},
+    {min:.10,name:"unlikely"},
+    {min:.02,name:"very_unlikely"},
+    {min:0,name:"nearly_impossible"}
+  ]);
 
   let state = loadState();
   let busy = false;
@@ -341,6 +371,7 @@ Keep narration grounded in the established genre, setting, tone, and known facts
       turn:0,
       revision:0,
       pending_action:null,
+      ui_preferences:{hints_enabled:false,hint_style:"gentle"},
       campaign:null,
       player:null,
       world:null,
@@ -359,11 +390,14 @@ Keep narration grounded in the established genre, setting, tone, and known facts
       raw.app_version=APP_VERSION;
       raw.revision=Number.isInteger(raw.revision)?raw.revision:0;
       raw.pending_action=raw.pending_action||null;
+      raw.ui_preferences=raw.ui_preferences&&typeof raw.ui_preferences==="object"?raw.ui_preferences:{};
+      raw.ui_preferences.hints_enabled=raw.ui_preferences.hints_enabled===true;
+      raw.ui_preferences.hint_style=["gentle","options","direct"].includes(raw.ui_preferences.hint_style)?raw.ui_preferences.hint_style:"gentle";
       raw.clocks=Array.isArray(raw.clocks)?raw.clocks:[];
       return raw;
     }
     if([1,2].includes(raw.schema_version)){
-      const migrated={...raw,schema_version:3,app_version:APP_VERSION,revision:Number.isInteger(raw.revision)?raw.revision:0,pending_action:null,clocks:Array.isArray(raw.clocks)?raw.clocks:[]};
+      const migrated={...raw,schema_version:3,app_version:APP_VERSION,revision:Number.isInteger(raw.revision)?raw.revision:0,pending_action:null,ui_preferences:{hints_enabled:false,hint_style:"gentle"},clocks:Array.isArray(raw.clocks)?raw.clocks:[]};
       if(migrated.player){
         migrated.player.id ||= "pc_1"; migrated.player.knowledge ||= [];
         for(const c of migrated.player.public_capabilities||[]){ c.level=String(c.level||"competent").toLowerCase(); c.description ||= ""; c.tags ||= []; }
@@ -432,18 +466,53 @@ Keep narration grounded in the established genre, setting, tone, and known facts
     const knowledge=(state.player?.knowledge||[]).slice(-5).map(k=>`<div class="kv" style="margin:6px 0">• ${escapeHtml(k.text)} <span class="label">(${escapeHtml(k.confidence)})</span></div>`).join("")||`<div class="kv label">Nothing notable recorded.</div>`;
     const place=state.world?.current_place?.name||"Unknown";
     const time=state.world?.time_label||"Unspecified";
+    const hintPrefs=state.ui_preferences||{hints_enabled:false,hint_style:"gentle"};
+    const hintEnabled=hintPrefs.hints_enabled===true;
+    const hintStyle=["gentle","options","direct"].includes(hintPrefs.hint_style)?hintPrefs.hint_style:"gentle";
     el.sidebar.innerHTML=`
       <div class="card"><h3>Campaign</h3><div class="kv"><strong>${escapeHtml(state.campaign.title||"Untitled")}</strong><br><span class="label">${escapeHtml(state.campaign.genre||"")}</span><br><span class="label">${escapeHtml(place)} · ${escapeHtml(time)}</span></div></div>
       <div class="card"><h3>Persona</h3><div class="kv"><strong>${escapeHtml(state.player?.name||"Unnamed")}</strong><br>${escapeHtml(state.player?.concept||"")}<br><span class="label">${escapeHtml(state.player?.condition||"")}</span></div><div class="tags" style="margin-top:9px">${caps}</div></div>
       <div class="card"><h3>Companions & NPCs</h3>${npcs}</div>
       <div class="card"><h3>Open Situations</h3>${threads}</div>
       <div class="card"><h3>Known</h3>${knowledge}</div>
-      <div class="card"><h3>Session</h3><div class="kv"><span class="label">Turn</span> ${state.turn}</div><details><summary>Developer snapshot</summary><div class="debug">${escapeHtml(JSON.stringify({schema:state.schema_version,turn:state.turn,place:state.world?.current_place?.id,npcs:(state.npcs||[]).length,threads:(state.threads||[]).length,facts:(state.world?.facts||[]).length,revision:state.revision,pending:state.pending_action?.intent_summary||null},null,2))}</div></details></div>`;
+      <div class="card"><h3>Hints</h3>
+        <div class="kv">Optional out-of-character help based only on what your character already knows.</div>
+        <div class="sidebar-actions"><button class="btn small" id="hintToggleBtn">Hints: ${hintEnabled?"On":"Off"}</button></div>
+        <div id="hintControls" class="${hintEnabled?"":"hidden"}" style="margin-top:9px">
+          <select class="sidebar-select" id="hintStyleSelect" aria-label="Hint style">
+            <option value="gentle" ${hintStyle==="gentle"?"selected":""}>Gentle nudge</option>
+            <option value="options" ${hintStyle==="options"?"selected":""}>Possible options</option>
+            <option value="direct" ${hintStyle==="direct"?"selected":""}>Direct suggestion</option>
+          </select>
+          <div class="sidebar-actions"><button class="btn small primary" id="hintRequestBtn">Ask Referee for Hint</button></div>
+        </div>
+        <div class="hint-state ${hintEnabled?"on":""}">${hintEnabled?"Hints are enabled. Requesting one does not advance time or alter world state.":"Hints are disabled. Turn them on whenever you want help."}</div>
+      </div>
+      <div class="card"><h3>Session</h3><div class="kv"><span class="label">Turn</span> ${state.turn}</div><details><summary>Developer snapshot</summary><div class="debug">${escapeHtml(JSON.stringify({schema:state.schema_version,probability_engine:PROBABILITY_ENGINE_VERSION,turn:state.turn,place:state.world?.current_place?.id,npcs:(state.npcs||[]).length,threads:(state.threads||[]).length,facts:(state.world?.facts||[]).length,revision:state.revision,pending:state.pending_action?.intent_summary||null,hints:hintPrefs},null,2))}</div></details></div>`;
+    bindSidebarControls();
+  }
+
+  function bindSidebarControls(){
+    const toggle=$("hintToggleBtn");
+    const select=$("hintStyleSelect");
+    const request=$("hintRequestBtn");
+    if(toggle) toggle.onclick=()=>{
+      state.ui_preferences ||= {hints_enabled:false,hint_style:"gentle"};
+      state.ui_preferences.hints_enabled=!state.ui_preferences.hints_enabled;
+      addEvent("hints_toggled",{enabled:state.ui_preferences.hints_enabled});
+      persist();
+    };
+    if(select) select.onchange=()=>{
+      state.ui_preferences ||= {hints_enabled:true,hint_style:"gentle"};
+      state.ui_preferences.hint_style=["gentle","options","direct"].includes(select.value)?select.value:"gentle";
+      persist();
+    };
+    if(request) request.onclick=requestHint;
   }
 
   function renderTranscript(){
     if(!state.campaign) return;
-    const messages=(state.transcript||[]).map(m=>`<div class="message ${escapeHtml(m.role)}"><div class="who">${m.role==="player"?"You":m.role==="system"?"System":"Referee"}</div>${formatText(m.text)}</div>`).join("");
+    const messages=(state.transcript||[]).map(m=>`<div class="message ${escapeHtml(m.role)}"><div class="who">${m.role==="player"?"You":m.role==="system"?"System":m.role==="hint"?"Hint":"Referee"}</div>${formatText(m.text)}</div>`).join("");
     el.transcript.innerHTML=messages||`<div class="message system"><p>The campaign is ready.</p></div>`;
     requestAnimationFrame(()=>{el.transcript.scrollTop=el.transcript.scrollHeight;});
   }
@@ -535,15 +604,65 @@ Keep narration grounded in the established genre, setting, tone, and known facts
       npcs:state.npcs,
       threads:state.threads,
       clocks:state.clocks,
-      recent_transcript:(state.transcript||[]).slice(-16),
+      recent_transcript:(state.transcript||[]).filter(m=>m.role!=="hint").slice(-16),
       recent_events:(state.event_log||[]).slice(-20),
       turn:state.turn,
       revision:state.revision
     };
   }
 
+  function playerFacingHintContext(){
+    const publicPlace=(p)=>p?{id:p.id,name:p.name,public_description:p.public_description}:null;
+    return {
+      campaign:{title:state.campaign?.title||"",genre:state.campaign?.genre||"",premise:state.campaign?.premise||"",tone:state.campaign?.tone||"",era_technology:state.campaign?.era_technology||"",source_mode:state.campaign?.source_mode||""},
+      player:{name:state.player?.name||"",concept:state.player?.concept||"",background:state.player?.background||"",condition:state.player?.condition||"",public_capabilities:state.player?.public_capabilities||[],inventory:state.player?.inventory||[],knowledge:state.player?.knowledge||[]},
+      world:{time_label:state.world?.time_label||"",current_place:publicPlace(state.world?.current_place),known_places:(state.world?.known_places||[]).map(publicPlace),resources:(state.world?.resources||[]).filter(r=>r.visibility!=="hidden"),facts:(state.world?.facts||[]).filter(f=>f.visibility!=="hidden")},
+      npcs:(state.npcs||[]).filter(n=>n.status!=="removed").map(n=>({id:n.id,name:n.name,status:n.status,public:n.public})),
+      open_situations:(state.threads||[]).filter(t=>t.visibility!=="hidden"&&t.status==="open"),
+      recent_transcript:(state.transcript||[]).filter(m=>["player","narrator"].includes(m.role)).slice(-12),
+      pending_action:state.pending_action?{intent_summary:state.pending_action.intent_summary,assessment_message:state.pending_action.assessment_message}:null
+    };
+  }
+
+  function hintPrompt(style){
+    const styleRules={
+      gentle:"Give one gentle nudge. Point to a relevant known detail, unresolved situation, or category of action without telling the player exactly what to do.",
+      options:"Offer 2-4 plausible next actions or questions based on known information. Keep them concise and do not rank them as the correct answer.",
+      direct:"Give one or two concrete suggestions for getting unstuck, with a brief reason grounded in known information. Do not reveal hidden facts or guarantee success."
+    };
+    return `UNIVERSAL RPG — PLAYER HINT v0.4.1
+
+This is optional out-of-character help. It is NOT an in-world action and must not advance time, resolve uncertainty, trigger NPC actions, mutate state, or establish new canon. Use only the PLAYER-KNOWN CONTEXT below. Never infer or reveal hidden NPC motives, hidden world facts, undiscovered clues, secret identities, future scripted events, numeric mechanics, or objective probabilities. A hint may remind the player of known information and suggest reasonable approaches; it must not identify a single "correct" path unless the known situation genuinely leaves only one.
+
+HINT STYLE:
+${styleRules[style]||styleRules.gentle}
+
+PLAYER-KNOWN CONTEXT:
+${JSON.stringify(playerFacingHintContext(),null,2)}`;
+  }
+
+  async function requestHint(){
+    if(busy||!state.campaign) return;
+    state.ui_preferences ||= {hints_enabled:false,hint_style:"gentle"};
+    if(!state.ui_preferences.hints_enabled) return;
+    const style=["gentle","options","direct"].includes(state.ui_preferences.hint_style)?state.ui_preferences.hint_style:"gentle";
+    const turnBefore=state.turn, revisionBefore=state.revision;
+    setBusy(true,"Thinking of a hint...");
+    try{
+      const api=await callWorker(hintPrompt(style),"hint","hint");
+      if(state.turn!==turnBefore||state.revision!==revisionBefore) throw new Error("World state changed while the hint was being prepared.");
+      addMessage("hint",api.data.message);
+      addEvent("hint_requested",{style,turn:state.turn,revision:state.revision,model:api.model,ai_profile:api.ai_profile});
+      addDebug({phase:"hint",style,model:api.model,ai_profile:api.ai_profile,request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,state_changed:false});
+      persist();
+    }catch(e){
+      addMessage("system","Hint request failed without changing world state: "+e.message);
+      persist();
+    }finally{ setBusy(false); }
+  }
+
   function compilerPrompt(form){
-    return `UNIVERSAL RPG CAMPAIGN COMPILER — v0.3.3
+    return `UNIVERSAL RPG CAMPAIGN COMPILER — v0.4.1
 
 Compile the user's campaign request into a compact playable starting state. The output structure is enforced by the API schema; focus on correct content rather than explaining the schema.
 
@@ -566,7 +685,7 @@ ${JSON.stringify(form,null,2)}`;
 
   function adjudicationPrompt(playerText,reviewTier="routine"){
     const pending=state.pending_action?JSON.stringify({intent_summary:state.pending_action.intent_summary,original_text:state.pending_action.original_text,assessment_message:state.pending_action.assessment_message},null,2):"NONE";
-    return `UNIVERSAL RPG — INTENT & ADJUDICATION PHASE v0.3.3
+    return `UNIVERSAL RPG — INTENT & ADJUDICATION PHASE v0.4.1
 
 Classify the player's message before resolving anything. The player may be asking for clarification, asking for a risk assessment, proposing/committing to an action, examining something in-world, communicating, or speaking meta-game.
 
@@ -595,13 +714,20 @@ AI routing / complexity:
 - escalation_reason must briefly state why the selected complexity tier is appropriate.
 ${reviewTier==="medium"?'- This request has been elevated to GPT-6 Sol / Medium. Perform the full adjudication at this tier. Recommend Astra only if the case is truly exceptional.\n':''}${reviewTier==="astra"?'- This request has already been escalated to GPT-6 Astra / High. Perform the final adjudication yourself and set escalation_recommended=false.\n':''}
 
-Probability rules:
+Probability Builder rules:
 - resolution_required=true only when the outcome is genuinely uncertain AND the difference between success/failure matters.
 - Choose the closest established protagonist capability; if none applies use untrained.
-- Objective difficulty/factors must include all established reality, including hidden facts that actually affect the attempt.
+- Capability anchors: untrained=no meaningful training; novice=basic training; familiar=some practice; competent=dependable occupational competence; skilled=notably proficient; expert=extensive professional mastery; master=elite mastery; legendary=extraordinary capability.
+- Difficulty is the INTRINSIC task demand under neutral conditions, not a bundle of situational modifiers. Use: routine=normally trivial for a trained person; easy=modest challenge; standard=normal occupational challenge; difficult=demanding even for a competent person; formidable=usually needs high expertise or favorable circumstances; extreme=near the edge of plausible ability.
+- Do not double-count the same fact in difficulty and factors. Temporary/circumstantial facts belong in factors.
+- Every factor must use exactly one category: opposition, equipment, preparation, environment, condition, assistance, time_pressure, scale, positioning, information, or other.
+- Factor impact meanings: minor=noticeable but modest; significant=strong; major=dominant while the action remains genuinely possible. Use one factor per distinct fact; do not inflate modifiers by restating the same circumstance.
+- Objective factors must include all established reality, including hidden facts that actually affect the attempt.
 - The assessment object must include only what the protagonist can reasonably perceive, know, or infer. Hidden facts may NOT appear in perceived_factors, apparent stakes, or uncertainty_note unless discovered.
 - perceived_difficulty is the protagonist's reasonable estimate, which may differ from objective difficulty.
-- Do not resolve the random outcome yourself.
+- Scale mismatches that make the intended effect physically impossible are not low-probability checks: set action_possible=false and resolution_required=false. A merely disadvantageous but still plausible scale mismatch may be a scale factor.
+- Active opposition is represented as an opposition factor based on the opponent's established capability/position relative to the protagonist; do not invent percentages.
+- Do not resolve the random outcome yourself. Local JavaScript owns probability and RNG.
 
 Output discipline:
 - CLARIFY/ASSESS/META and pending keep/cancel/confirm responses must have empty state updates and no NPC actions.
@@ -620,7 +746,7 @@ ${playerText}`;
   }
 
   function assessmentPrompt(playerText,adj,preview,requiresConfirmation){
-    return `UNIVERSAL RPG — PLAYER-FACING ASSESSMENT v0.3.3
+    return `UNIVERSAL RPG — PLAYER-FACING ASSESSMENT v0.4.1
 
 Give the player a concise, natural referee assessment before any action is resolved. Use only the CHARACTER-KNOWN assessment data below. Do not reveal numeric probabilities, hidden factors, hidden statistics, or objective difficulty. Explain the important visible reasons in ordinary language.
 
@@ -635,15 +761,15 @@ INTENT:
 ${adj.intent_summary}
 
 CHARACTER-KNOWN ASSESSMENT:
-${JSON.stringify({likelihood_band:preview.likelihood_band,confidence:adj.assessment.confidence,favorable_factors:adj.assessment.perceived_factors.filter(f=>f.impact.includes("advantage")),unfavorable_factors:adj.assessment.perceived_factors.filter(f=>f.impact.includes("hindrance")),apparent_success_stakes:adj.assessment.apparent_success_stakes,apparent_failure_stakes:adj.assessment.apparent_failure_stakes,uncertainty_note:adj.assessment.uncertainty_note},null,2)}
+${JSON.stringify({likelihood_band:preview.display_likelihood_band,confidence:adj.assessment.confidence,favorable_factors:adj.assessment.perceived_factors.filter(f=>f.impact.includes("advantage")),unfavorable_factors:adj.assessment.perceived_factors.filter(f=>f.impact.includes("hindrance")),apparent_success_stakes:adj.assessment.apparent_success_stakes,apparent_failure_stakes:adj.assessment.apparent_failure_stakes,uncertainty_note:adj.assessment.uncertainty_note},null,2)}
 
 requires_confirmation: ${requiresConfirmation}`;
   }
 
   function outcomePrompt(playerText,adjudication,resolution){
-    return `UNIVERSAL RPG — OUTCOME & NARRATION PHASE v0.3.3
+    return `UNIVERSAL RPG — OUTCOME & NARRATION PHASE v0.4.1
 
-The resolution engine has already fixed the action outcome. It may be deterministic or probabilistic. Accept the supplied result exactly. Do not reroll it, reverse it, or alter its stated magnitude.
+The resolution engine has already fixed the action outcome. It may be deterministic or probabilistic. Accept the supplied result exactly. Do not reroll it, reverse it, or alter its stated magnitude. Probabilistic magnitude may be marginal_success, solid_success, strong_success, exceptional_success, marginal_failure, failure, severe_failure, or exceptional_failure. Treat magnitude as degree/quality of the resolved result, not permission to invent unrelated consequences.
 
 Narrate the consequence naturally in the established tone. Do not reveal numeric probability, random sample, hidden stats, private NPC reasoning, or hidden world information. Explain relevant causes fictionally. NPCs remain autonomous and may react according to their own state.
 
@@ -662,49 +788,141 @@ ENGINE RESULT:
 ${JSON.stringify(resolution,null,2)}`;
   }
 
-  function probabilityFrom(adj,perceived=false){
-    const cap=CAPABILITY[String(adj.capability_level||"untrained").toLowerCase()]??CAPABILITY.untrained;
-    const difficultyName=perceived?(adj.assessment?.perceived_difficulty||adj.difficulty):adj.difficulty;
-    let challenge=DIFFICULTY[String(difficultyName||"standard").toLowerCase()]??DIFFICULTY.standard;
-    const factors=perceived?(adj.assessment?.perceived_factors||[]):(adj.factors||[]);
+  function clamp(n,min,max){ return Math.max(min,Math.min(max,n)); }
+  function sigmoid(x){ return 1/(1+Math.exp(-x)); }
+
+  function calibratedBaseLogit(capabilityName,difficultyName){
+    const capName=String(capabilityName||"untrained").toLowerCase();
+    const diffName=String(difficultyName||"standard").toLowerCase();
+    const capIndex=CAPABILITY_INDEX[capName] ?? CAPABILITY_INDEX.untrained;
+    const difficultyIndex=DIFFICULTY_INDEX[diffName] ?? DIFFICULTY_INDEX.standard;
+    const baseLogit=BASELINE_LOGIT + ((capIndex-CAPABILITY_INDEX.competent)*CAPABILITY_STEP_LOGIT) - ((difficultyIndex-DIFFICULTY_INDEX.standard)*DIFFICULTY_STEP_LOGIT);
+    return {capability_name:capName,difficulty_name:diffName,capability_index:capIndex,difficulty_index:difficultyIndex,base_logit:baseLogit,base_probability:clamp(sigmoid(baseLogit),PROBABILITY_FLOOR,PROBABILITY_CEILING)};
+  }
+
+  function factorContribution(factors){
     const applied=[];
-    for(const f of factors){ const shift=FACTOR_SHIFT[f.impact]||0; challenge+=shift; applied.push({...f,challenge_shift:shift}); }
-    challenge=Math.max(0,Math.min(120,challenge));
-    const diff=cap-challenge;
-    let p=1/(1+Math.exp(-diff/14.5));
-    p=Math.max(.005,Math.min(.995,p));
-    return {probability:p,capability_score:cap,challenge_score:challenge,difference:diff,applied_factors:applied};
+    const categoryRaw={};
+    for(const raw of factors||[]){
+      const category=String(raw?.category||"other");
+      const impact=String(raw?.impact||"");
+      const shift=FACTOR_LOGIT[impact]||0;
+      categoryRaw[category]=(categoryRaw[category]||0)+shift;
+      applied.push({...raw,category,logit_shift:shift});
+    }
+    const categoryCapped={};
+    let total=0;
+    for(const [category,value] of Object.entries(categoryRaw)){
+      const capped=clamp(value,-FACTOR_CATEGORY_CAP,FACTOR_CATEGORY_CAP);
+      categoryCapped[category]=capped;
+      total+=capped;
+    }
+    const totalCapped=clamp(total,-TOTAL_FACTOR_CAP,TOTAL_FACTOR_CAP);
+    return {applied_factors:applied,category_raw_logit:categoryRaw,category_capped_logit:categoryCapped,raw_total_logit:total,total_factor_logit:totalCapped};
+  }
+
+  function probabilityFrom(adj,perceived=false){
+    const difficultyName=perceived?(adj.assessment?.perceived_difficulty||adj.difficulty):adj.difficulty;
+    const base=calibratedBaseLogit(adj.capability_level,difficultyName);
+    const factors=perceived?(adj.assessment?.perceived_factors||[]):(adj.factors||[]);
+    const fx=factorContribution(factors);
+    const netLogit=base.base_logit+fx.total_factor_logit;
+    const p=clamp(sigmoid(netLogit),PROBABILITY_FLOOR,PROBABILITY_CEILING);
+    return {
+      engine_version:PROBABILITY_ENGINE_VERSION,
+      probability:p,
+      ...base,
+      net_logit:netLogit,
+      ...fx
+    };
   }
 
   function likelihoodBand(p,deterministicOutcome="none"){
     if(deterministicOutcome==="success") return "essentially_certain";
     if(deterministicOutcome==="failure") return "not_possible";
-    if(p>=.98) return "essentially_certain";
-    if(p>=.90) return "very_likely";
-    if(p>=.70) return "good";
-    if(p>=.55) return "favorable";
-    if(p>=.45) return "uncertain";
-    if(p>=.30) return "not_good";
-    if(p>=.10) return "unlikely";
-    if(p>=.02) return "very_unlikely";
-    return "nearly_impossible";
+    if(typeof p!=="number"||!Number.isFinite(p)) return "uncertain";
+    return LIKELIHOOD_BANDS.find(b=>p>=b.min)?.name||"nearly_impossible";
+  }
+
+  function temperLikelihoodForConfidence(band,confidence){
+    const c=String(confidence||"unknown");
+    if(c==="high"||c==="moderate") return band;
+    if(c==="unknown") return "uncertain";
+    const towardUncertain={
+      essentially_certain:"very_likely", very_likely:"good", good:"favorable", favorable:"uncertain",
+      not_good:"uncertain", unlikely:"not_good", very_unlikely:"unlikely", nearly_impossible:"very_unlikely", not_possible:"not_possible", uncertain:"uncertain"
+    };
+    return towardUncertain[band]||"uncertain";
   }
 
   function previewProbability(adj){
-    if(!adj.resolution_required){ return {probability:null,likelihood_band:likelihoodBand(null,adj.deterministic_outcome)}; }
-    if(adj.capability_level==="none"||adj.assessment?.perceived_difficulty==="none") return {probability:null,likelihood_band:"uncertain"};
+    if(!adj.resolution_required){
+      const band=likelihoodBand(null,adj.deterministic_outcome);
+      return {probability:null,likelihood_band:band,display_likelihood_band:temperLikelihoodForConfidence(band,adj.assessment?.confidence)};
+    }
+    if(adj.capability_level==="none"||adj.assessment?.perceived_difficulty==="none") return {probability:null,likelihood_band:"uncertain",display_likelihood_band:"uncertain"};
     const calc=probabilityFrom(adj,true);
-    return {...calc,likelihood_band:likelihoodBand(calc.probability)};
+    const band=likelihoodBand(calc.probability);
+    return {...calc,likelihood_band:band,display_likelihood_band:temperLikelihoodForConfidence(band,adj.assessment?.confidence)};
+  }
+
+  function outcomeMagnitudeFromMargin(margin){
+    if(margin>=3.0) return "exceptional_success";
+    if(margin>=1.5) return "strong_success";
+    if(margin>=.45) return "solid_success";
+    if(margin>0) return "marginal_success";
+    if(margin<=-3.0) return "exceptional_failure";
+    if(margin<=-1.5) return "severe_failure";
+    if(margin<=-.45) return "failure";
+    return "marginal_failure";
   }
 
   function computeProbability(adj){
     const calc=probabilityFrom(adj,false);
     const u32=crypto.getRandomValues(new Uint32Array(1))[0];
     const sample=u32/4294967296;
-    const success=sample<calc.probability;
-    const strength=success?1-(sample/calc.probability):(sample-calc.probability)/(1-calc.probability);
-    const magnitude=strength>=.80?"exceptional":strength>=.50?"strong":"ordinary";
-    return {success,magnitude,sample,...calc};
+    const boundedSample=clamp(sample,1e-9,1-1e-9);
+    // A single sample drives both binary success and degree. The logistic performance noise
+    // is mathematically consistent with the calibrated success probability: sample < p iff margin > 0.
+    const performanceNoise=Math.log((1-boundedSample)/boundedSample);
+    const performanceMargin=calc.net_logit+performanceNoise;
+    const success=performanceMargin>0;
+    const magnitude=outcomeMagnitudeFromMargin(performanceMargin);
+    return {success,magnitude,sample,performance_noise:performanceNoise,performance_margin:performanceMargin,...calc};
+  }
+
+  function probabilityCalibrationReport(){
+    const anchors=[
+      ["untrained","standard"],["familiar","standard"],["competent","standard"],["skilled","standard"],["expert","standard"],
+      ["competent","easy"],["competent","difficult"],["competent","formidable"],["expert","formidable"]
+    ];
+    return {
+      engine_version:PROBABILITY_ENGINE_VERSION,
+      baseline:"Competent vs Standard = 70% before circumstances",
+      anchors:Object.fromEntries(anchors.map(([c,d])=>[`${c}_vs_${d}`,Number(calibratedBaseLogit(c,d).base_probability.toFixed(4))])),
+      factor_logit:FACTOR_LOGIT,
+      factor_category_cap:FACTOR_CATEGORY_CAP,
+      total_factor_cap:TOTAL_FACTOR_CAP,
+      probability_floor:PROBABILITY_FLOOR,
+      probability_ceiling:PROBABILITY_CEILING,
+      likelihood_bands:LIKELIHOOD_BANDS
+    };
+  }
+
+  function validateProbabilityCalibration(){
+    const competentStandard=calibratedBaseLogit("competent","standard").base_probability;
+    const skilledStandard=calibratedBaseLogit("skilled","standard").base_probability;
+    const competentDifficult=calibratedBaseLogit("competent","difficult").base_probability;
+    const majorHelp=factorContribution([{category:"preparation",label:"calibration",impact:"major_advantage"}]).total_factor_logit;
+    const majorHarm=factorContribution([{category:"condition",label:"calibration",impact:"major_hindrance"}]).total_factor_logit;
+    const checks={
+      competent_standard_anchor:Math.abs(competentStandard-.70)<.0001,
+      higher_capability_helps:skilledStandard>competentStandard,
+      higher_difficulty_hurts:competentDifficult<competentStandard,
+      advantage_positive:majorHelp>0,
+      hindrance_negative:majorHarm<0
+    };
+    return {ok:Object.values(checks).every(Boolean),checks};
   }
 
   function validateUniqueIds(items,label){
@@ -955,7 +1173,7 @@ ${JSON.stringify(resolution,null,2)}`;
         assertNonTurnOutput(adj);
         const a=await makeAssessmentMessage(text,adj,false);
         addMessage("narrator",a.message);
-        addEvent("assessment_only",{intent:adj.intent_summary,preview_band:a.preview.likelihood_band,confidence:adj.assessment.confidence});
+        addEvent("assessment_only",{intent:adj.intent_summary,preview_band:a.preview.display_likelihood_band,confidence:adj.assessment.confidence});
         addDebug({phase:"assessment",model:a.api.model,ai_profile:a.api.ai_profile,preview:a.preview,request_id:a.api.openai_request_id,usage:a.api.usage});
         persist(); return;
       }
@@ -972,10 +1190,10 @@ ${JSON.stringify(resolution,null,2)}`;
           intent_summary:adj.intent_summary,
           adjudication:deepClone(adj),
           assessment_message:a.message,
-          perceived_likelihood:a.preview.likelihood_band
+          perceived_likelihood:a.preview.display_likelihood_band
         };
         addMessage("narrator",a.message);
-        addEvent("pending_action_created",{intent:adj.intent_summary,action_kind:adj.action_kind,perceived_likelihood:a.preview.likelihood_band,meaningful_consequence:adj.meaningful_consequence});
+        addEvent("pending_action_created",{intent:adj.intent_summary,action_kind:adj.action_kind,perceived_likelihood:a.preview.display_likelihood_band,meaningful_consequence:adj.meaningful_consequence});
         addDebug({phase:"assessment_checkpoint",model:a.api.model,ai_profile:a.api.ai_profile,preview:a.preview,request_id:a.api.openai_request_id,usage:a.api.usage});
         persist(); return;
       }
@@ -1007,9 +1225,49 @@ ${JSON.stringify(resolution,null,2)}`;
 
   function exportJson(filename,obj){ const blob=new Blob([JSON.stringify(obj,null,2)],{type:"application/json"}); const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=filename; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000); }
   function exportSave(){ exportJson(`universal-rpg-save-turn-${state.turn}.json`,state); }
-  function exportDebug(){
-    if(!confirm("Debug export includes hidden NPC/world information and internal probability records. Continue?")) return;
-    exportJson(`universal-rpg-debug-turn-${state.turn}.json`,{exported_at:now(),app_version:APP_VERSION,schema_version:SCHEMA_VERSION,worker:worker(),state,last_debug:lastDebug});
+
+  async function gatewayHealthSnapshot(){
+    try{
+      const r=await fetch(worker()+"/health",{cache:"no-store"});
+      const data=await r.json().catch(()=>null);
+      return {reachable:true,http_status:r.status,ok:r.ok,data};
+    }catch(e){
+      return {reachable:false,error:e instanceof Error?e.message:String(e)};
+    }
+  }
+
+  async function exportDebug(){
+    if(!confirm("Debug export includes hidden NPC/world information, transcript, event/debug logs, and internal probability records. It never includes your GAME_TOKEN or OpenAI API key. Continue?")) return;
+    const previousBusy=busy;
+    if(!previousBusy) setBusy(true,"Building debug export...");
+    try{
+      const health=await gatewayHealthSnapshot();
+      const diagnosticSummary={
+        app_version:APP_VERSION,
+        schema_version:SCHEMA_VERSION,
+        probability_engine_version:PROBABILITY_ENGINE_VERSION,
+        turn:state.turn,
+        revision:state.revision,
+        campaign_active:!!state.campaign,
+        pending_action:state.pending_action?{id:state.pending_action.id,intent_summary:state.pending_action.intent_summary,created_turn:state.pending_action.created_turn,state_revision:state.pending_action.state_revision,perceived_likelihood:state.pending_action.perceived_likelihood}:null,
+        hints:state.ui_preferences||{hints_enabled:false,hint_style:"gentle"},
+        counts:{transcript:(state.transcript||[]).length,events:(state.event_log||[]).length,debug_entries:(state.debug_log||[]).length,npcs:(state.npcs||[]).length,threads:(state.threads||[]).length,facts:(state.world?.facts||[]).length},
+        connection:{worker:worker(),game_token_present:!!token(),game_token_persisted:!!localStorage.getItem(TOKEN_KEY),gateway_health:health},
+        browser:{user_agent:navigator.userAgent,language:navigator.language,platform:navigator.platform,on_line:navigator.onLine,viewport:{width:window.innerWidth,height:window.innerHeight},timezone:Intl.DateTimeFormat().resolvedOptions().timeZone||null},
+        ai_profiles:AI_PROFILES
+      };
+      exportJson(`universal-rpg-debug-turn-${state.turn}-${new Date().toISOString().replace(/[:.]/g,"-")}.json`,{
+        exported_at:now(),
+        diagnostic_summary:diagnosticSummary,
+        probability_calibration:probabilityCalibrationReport(),
+        probability_self_test:validateProbabilityCalibration(),
+        last_debug:lastDebug,
+        recent_debug:(state.debug_log||[]).slice(-75),
+        recent_events:(state.event_log||[]).slice(-100),
+        recent_system_messages:(state.transcript||[]).filter(m=>m.role==="system").slice(-25),
+        state
+      });
+    }finally{ if(!previousBusy) setBusy(false); }
   }
 
   function openSettings(){ el.workerUrl.value=worker(); el.gameToken.value=token(); el.rememberToken.checked=!!localStorage.getItem(TOKEN_KEY); el.settingsDialog.showModal(); }
