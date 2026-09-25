@@ -1,5 +1,220 @@
 # Universal RPG — Audit Log
 
+## Version 0.3.0
+Date: 2026-09-25
+
+### Milestone
+Implemented the **informed decision / commitment loop**. Universal RPG now separates asking, assessing, deciding, resolving, and committing instead of treating every player sentence as an action. Consequential intentions normally pause for a character-informed risk assessment before the engine samples an outcome.
+
+### Interaction model
+
+Every player message is now structured as one of these interaction types:
+
+- `clarify` — asks about information already perceivable or already known.
+- `assess` — asks whether a contemplated action is likely to work or what its apparent risks are.
+- `act` — attempts or proposes a physical/general action.
+- `examine` — actively gathers new information in-world.
+- `communicate` — speaks to or attempts to influence another character.
+- `meta` — addresses the referee/game rather than acting in the fiction.
+- `confirm_pending` / `cancel_pending` — responds to an outstanding consequential choice.
+
+Clarification, assessment, and meta interaction do **not** advance world time, alter state, trigger NPC actions, or sample random outcomes.
+
+### Consequence checkpoint
+
+A new consequence gate runs before action resolution:
+
+1. Is the proposed action possible?
+2. Does the choice have a meaningful foreseeable consequence?
+3. Is the outcome uncertain?
+
+Meaningful consequences include injury, resource loss, exposure, irreversible commitment, substantial time cost, discovery, social consequences, and similar changes that matter to the player's decision.
+
+If a consequential in-world action is proposed, the normal flow is now:
+
+```text
+Player intention
+→ referee interpretation
+→ probability/likelihood preview (no random sample)
+→ character-informed assessment
+→ player confirmation / reconsideration / clarification
+→ resolution only after confirmation
+→ state commit
+→ narration
+```
+
+Actions with no meaningful consequence still resolve normally without an unnecessary checkpoint.
+
+Guaranteed actions may still receive a checkpoint when the **cost** matters. Example: breaking a window may be automatically successful but still warrant warning the player that it will create loud noise and exposure.
+
+### Immediate-action exception
+
+A player can deliberately bypass the checkpoint by unmistakably demanding immediate execution, e.g.:
+
+> "I shoot immediately. Don't wait."
+
+Ordinary action wording such as "I shoot him" remains a committed intention but still receives a checkpoint when the foreseeable consequences are meaningful.
+
+### Pending actions
+
+Added a top-level `pending_action` interaction record. It is not world canon; it represents an uncommitted choice waiting on the player.
+
+A pending action stores:
+
+- original player wording
+- summarized intent
+- structured adjudication
+- character-facing assessment message
+- perceived likelihood band
+- campaign state revision at which the assessment was made
+
+While an action is pending, the player may:
+
+- confirm it (`yes`, `do it`, `fire`, etc.)
+- cancel it
+- ask clarification while keeping it pending
+- ask additional assessment questions
+- replace it with a different plan
+
+A confirmation is rejected if authoritative state changed after the assessment.
+
+### Objective vs. perceived probability
+
+Probability preview now distinguishes two models:
+
+- **Objective resolution model** — uses all established facts that actually affect the action, including hidden facts.
+- **Perceived assessment model** — uses only factors the protagonist can reasonably perceive, know, or infer.
+
+This allows mysteries and deception to remain valid. For example, a sabotaged bridge can objectively be much more dangerous than it appears without the referee leaking the sabotage during a pre-action assessment.
+
+The referee supplies separate objective and perceived difficulty/factor inputs. The browser calculates both; only the perceived result is used for player-facing assessment.
+
+### Player-facing likelihood
+
+The browser converts perceived probability into a semantic band before sending it back to Astra for natural phrasing. The current provisional bands are:
+
+```text
+essentially_certain
+very_likely
+good
+favorable
+uncertain
+not_good
+unlikely
+very_unlikely
+nearly_impossible
+not_possible
+```
+
+The narrator is instructed to turn these into ordinary referee language rather than exposing a probability or repeating mechanical labels.
+
+Example intended interaction:
+
+```text
+Player: I want to shoot the cultist.
+
+Referee: You're not very good with a firearm, and he's pretty far away.
+Your chances of hitting him aren't good. Do you still want to take the shot?
+
+Player: Yes.
+
+[Only now does the engine sample the outcome and commit consequences.]
+```
+
+### Worker changes
+
+- Updated Cloudflare Worker to v0.3.0.
+- Added Structured Output mode `assessment`.
+- Expanded `adjudicate` schema with:
+  - `intent_type`
+  - `pending_disposition`
+  - `commitment`
+  - `action_possible`
+  - `meaningful_consequence`
+  - `checkpoint_required`
+  - separate character-perceived assessment data
+- Added `ASSESSMENT_SCHEMA` and reusable `FACTOR_SCHEMA`.
+- Updated system instructions to enforce the informed-decision loop and prohibit hidden-state leakage during assessments.
+- Structured schema identifiers moved to v3.
+- `/health` now reports Worker version `0.3.0` after deployment.
+
+### Client/state changes
+
+- Updated `index.html` to v0.3.0.
+- State schema is now version `3`.
+- Added automatic migration from v0.1/v0.2 saves.
+- Added `revision` for validating pending-action freshness.
+- Added `pending_action` interaction state.
+- World `turn` now increments only when an in-world action is actually committed; clarification and assessment do not consume turns.
+- Added a subtle pending-decision notice above the input box.
+- Input placeholder changes while the referee is waiting for confirmation.
+- Debug snapshot now displays revision and pending-action status.
+- Connection test now rejects Workers older than v0.3.0 before play begins.
+- Debug/event log now records:
+  - adjudication classification
+  - assessment previews
+  - checkpoint creation
+  - confirmation/cancellation/replacement
+  - objective probability resolution only after commitment
+
+### Transaction behavior
+
+The existing transactional safety is retained. If classification, assessment generation, probability resolution, narration, or state validation fails, the interaction restores the pre-message state and no partial world-state mutation remains committed.
+
+### Validation performed
+
+- `universal-rpg-worker.js` passed `node --check`.
+- Embedded JavaScript from `index.html` passed `node --check`.
+- Verified there is only one active definition of the v0.3 probability and turn-processing functions after migration.
+- Confirmed v0.3 client recognizes save schemas 1, 2, and 3.
+- Live OpenAI behavior still requires deployment of Worker v0.3 and browser testing.
+
+### Important deployment requirement
+
+Deploy `universal-rpg-worker.js` v0.3 **before** replacing the GitHub `index.html`. The v0.3 client uses the new `assessment` request mode and expanded adjudication schema.
+
+No new Cloudflare variables or secrets are required. Existing configuration remains valid:
+
+```text
+OPENAI_API_KEY   (Secret)
+GAME_TOKEN       (Secret)
+
+OPENAI_MODEL = gpt-6-astra
+REASONING_EFFORT = high
+MAX_OUTPUT_TOKENS = 12000
+MAX_INPUT_CHARS = 240000
+ALLOWED_ORIGINS = https://diabolicdonut.github.io
+```
+
+### Known limitations
+
+- Probability anchors, factor shifts, and the logistic curve remain provisional. v0.3 implements the decision workflow, not final probability calibration.
+- Astra still chooses bounded objective/perceived difficulty inputs; these require calibration and consistency testing in v0.4.
+- Risk-language thresholds are provisional and need empirical tuning.
+- The current pending-action record is stored in the browser save envelope for reload safety even though it is not world canon.
+- Hidden campaign state remains inspectable through browser storage/debug exports.
+- NPC autonomy is structured but independent off-screen simulation remains a later milestone.
+- Clarification depends on Astra correctly distinguishing "already observable/known" information from active investigation; debug review is needed for edge cases.
+
+### Recommended next checkpoint
+
+Run focused interaction tests before probability calibration. At minimum test:
+
+- low-risk deterministic action: no checkpoint
+- uncertain consequential action: assessment → confirmation → resolution
+- guaranteed action with meaningful cost: assessment → confirmation → deterministic consequence
+- explicit immediate action: checkpoint bypassed
+- clarification: no turn/time/state mutation
+- assessment-only question: no random sample or state mutation
+- clarification while an action is pending: answer while preserving pending action
+- cancel pending action
+- replace pending action with a new plan
+- hidden-factor case where objective risk differs from perceived risk
+
+After those tests, v0.4 should calibrate the Probability Builder rather than adding new genre subsystems.
+
+---
+
 ## Version 0.2.0
 Date: 2026-09-25
 
