@@ -1,3 +1,75 @@
+## Version 0.4.4
+Date: 2026-09-26
+
+### Milestone
+Implemented **Scenario Progression Hardening & Stall Recovery** after the turn-11 Dinotopia save demonstrated that a Canonical campaign could still begin with an empty scenario framework and therefore never invoke the Adventure Director. No Cloudflare Worker changes are required.
+
+### Bug confirmed from turn-11 save
+The supplied save reported `source_mode: Canonical`, but `scenario.anchors` was empty and `scenario.director.needs_bootstrap` remained `true`. The debug/event history contained no `scenario_framework_bootstrapped`, `director`, or `director_noop` phase. With only Arthur present and only broad survival/discovery threads, the referee repeatedly resolved local beach searches, rest, and advice without any forward scenario structure.
+
+### Scenario framework hardening
+- Added `scenarioFrameworkMissing()` so an empty anchor list is treated as broken even if the bootstrap flag is wrong.
+- `ensureScenarioFramework()` now repairs either an explicit bootstrap state **or an empty scenario** before play.
+- A repaired scenario must contain at least one anchor; an empty repair is rejected instead of silently allowing a motionless campaign.
+- Source-guided scenarios with anchors but no opening `active`/`eligible` anchor automatically promote the earliest non-optional pending anchor to `eligible` as a safety fallback.
+- New campaign creation now immediately runs the repair pass if the compiler somehow returns an empty scenario, and refuses to begin if the framework is still empty afterward.
+- Existing schema-v4 saves with an empty anchor list are automatically marked for bootstrap on load.
+
+### Canonical / Adaptive repair support
+The scenario-repair Structured Output now returns:
+- `scenario`
+- `npc_additions`
+
+This lets the one-time repair pass establish important near-term source NPCs as `elsewhere` without pretending the protagonist has met them. Existing NPC IDs are never duplicated.
+
+The repair prompt now requires:
+- 3-8 forward/current anchors;
+- at least one active or eligible opening anchor;
+- the next major source-compatible encounter/discovery when it remains causally possible in Canonical/Adaptive play;
+- important near-term source NPCs needed by those anchors;
+- no retroactive claim that an undiscovered event already happened merely to match the source.
+
+### Adventure Director anti-loop behavior
+- Two committed turns without meaningful development now force a Director check.
+- Repeating the same place for two committed turns also forces a Director check.
+- In source-guided campaigns, pending anchors are rechecked once progression pressure begins during travel, movement, observation, conversation, or rest.
+- The Director prompt now explicitly treats a scene as **stalled** when `turns_since_development >= 2` or `repeat_place_turns >= 2`.
+- In a stalled source-guided scene, an eligible/active major or supporting anchor should normally advance unless a real blocking condition exists.
+- The Director is explicitly told not to respond to a stalled scene merely by asking the player to choose another direction or repeat the same search.
+
+### Hint anti-loop behavior
+Hints now receive a compact digest of the most recent player-visible results and are instructed not to recommend a recently failed or fruitless action unless circumstances materially changed. If the player is circling the same scene, hints should suggest a different category of approach or a broader intention.
+
+### Pending-action cost cleanup
+Local confirmation recognition was expanded so ordinary confirmations such as `Yes, search for survivors` and repeating the exact already-assessed action can be handled without another full adjudication call, unless replacement language such as `but`, `instead`, or `rather` appears.
+
+### Build identity / diagnostics
+- Application version: `0.4.4`
+- Build ID: `2026-09-26a`
+- Context-policy diagnostic version: `1.1`
+- Campaign compilation and scenario bootstrap debug entries now include the build ID.
+
+### Existing save behavior
+The supplied turn-11 Dinotopia save can be imported into v0.4.4. On the next player action (provided no action is already awaiting confirmation), the client should detect the empty scenario framework, make a one-time Astra/High bootstrap call, install anchors and any needed off-screen NPCs, then continue the player action. The Adventure Director can then begin moving the world instead of leaving the player in an indefinite beach loop.
+
+### Validation performed
+- Embedded JavaScript extracted from the completed HTML and passed `node --check`.
+- Confirmed no `0.4.3` version strings remain in the v0.4.4 HTML.
+- Confirmed the scenario repair schema now includes `npc_additions`.
+- Confirmed the runtime checks for either `needs_bootstrap` or an empty anchor list.
+- Confirmed new campaign creation invokes scenario repair when necessary.
+- Confirmed source-guided scenarios cannot remain indefinitely without an opening eligible/active anchor after local validation.
+
+### Recommended verification
+1. Upload v0.4.4 and hard-refresh the GitHub Pages page.
+2. Import the turn-11 Dinotopia save.
+3. Submit one ordinary action. The status should briefly show **Building scenario framework...** before the action is interpreted.
+4. Export Debug after that action and verify an event/debug phase named `scenario_framework_bootstrapped` / `scenario_bootstrap`, with `anchor_count > 0`.
+5. Continue for several turns and verify `adventure_director` or `director_noop` entries now appear.
+6. If the player remains in the same scene for two committed turns without meaningful development, verify the Director is invoked and does not simply recycle the same shelter/search advice when a compatible anchor is available.
+
+---
+
 ## Version 0.4.3
 Date: 2026-09-25
 

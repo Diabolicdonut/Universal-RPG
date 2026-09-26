@@ -47,7 +47,7 @@
 <body>
 <div class="app" id="app">
   <header>
-    <div class="brand">Universal RPG</div><div class="version">v0.4.3</div>
+    <div class="brand">Universal RPG</div><div class="version">v0.4.4</div>
     <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Not connected</span></div>
     <div class="spacer"></div>
     <button class="btn small" id="newBtn">New Campaign</button>
@@ -115,7 +115,8 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "0.4.3";
+  const APP_VERSION = "0.4.4";
+  const BUILD_ID = "2026-09-26a";
   const SCHEMA_VERSION = 4;
   const STATE_KEY = "universalRpg.state.v0_4";
   const LEGACY_STATE_KEYS = ["universalRpg.state.v0_3", "universalRpg.state.v0_2", "universalRpg.state.v0_1"];
@@ -294,7 +295,7 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
       },
       required:["campaign","player","world","npcs","threads","scenario","opening_narration"], additionalProperties:false
     },
-    scenario_compile:{type:"object",properties:{scenario:SCENARIO_SCHEMA},required:["scenario"],additionalProperties:false},
+    scenario_compile:{type:"object",properties:{scenario:SCENARIO_SCHEMA,npc_additions:{type:"array",items:NPC_SCHEMA}},required:["scenario","npc_additions"],additionalProperties:false},
     adjudicate:{
       type:"object",
       properties:{
@@ -345,7 +346,7 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
   function outputFormatFor(mode){
     const schema=STRUCTURED_SCHEMAS[mode];
     if(!schema) return null;
-    return {type:"json_schema",name:`universal_rpg_${mode}_v043`,strict:true,schema};
+    return {type:"json_schema",name:`universal_rpg_${mode}_v044`,strict:true,schema};
   }
 
   // Probability Builder v1.0 — calibrated semantic resolution model.
@@ -442,6 +443,7 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
       raw.clocks=Array.isArray(raw.clocks)?raw.clocks:[];
       raw.creation_request=raw.creation_request&&typeof raw.creation_request==="object"?raw.creation_request:null;
       raw.scenario=normalizeScenario(raw.scenario,raw);
+      if(raw.campaign && (!Array.isArray(raw.scenario.anchors) || raw.scenario.anchors.length===0)) raw.scenario.director.needs_bootstrap=true;
       return raw;
     }
     if([1,2,3].includes(raw.schema_version)){
@@ -617,7 +619,7 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
       input_chars:String(input||"").length,
       schema_chars:format?JSON.stringify(format).length:0,
       approximate_input_tokens:Math.ceil((AI_SYSTEM_PROMPT.length+String(input||"").length+(format?JSON.stringify(format).length:0))/4),
-      context_policy_version:"1.0"
+      context_policy_version:"1.1"
     };
 
     let r;
@@ -655,7 +657,7 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
     };
   }
 
-  // Context Optimization v1.0 — the save/database is authoritative memory. AI calls receive only
+  // Context Optimization v1.1 — the save/database is authoritative memory. AI calls receive only
   // the slice of state needed for the current job, so prompt size stays approximately bounded as a campaign grows.
   const CONTEXT_POLICY = Object.freeze({
     adjudication_messages:4,
@@ -876,6 +878,7 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
       open_situations:compactThreads({publicOnly:true,max:6}).filter(t=>t.status==="open"),
       public_scenario:compactScenario(query,{publicOnly:true,max:3}),
       recent_dialogue:recentTranscript(CONTEXT_POLICY.hint_messages,["player","narrator"]),
+      recent_results:(state.event_log||[]).filter(e=>["deterministic_resolution","narrated_outcome","adventure_director"].includes(e.type)).slice(-4).map(compactEvent),
       pending_action:state.pending_action?{intent_summary:compactText(state.pending_action.intent_summary,400),assessment_message:compactText(state.pending_action.assessment_message,600)}:null
     };
   }
@@ -891,9 +894,9 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
       options:"Offer 2-4 plausible next actions or questions based on known information. Keep them concise and do not rank them as the correct answer.",
       direct:"Give one or two concrete suggestions for getting unstuck, with a brief reason grounded in known information. Do not reveal hidden facts or guarantee success."
     };
-    return `UNIVERSAL RPG — PLAYER HINT v0.4.3
+    return `UNIVERSAL RPG — PLAYER HINT v0.4.4
 
-This is optional out-of-character help. It is NOT an in-world action and must not advance time, resolve uncertainty, trigger NPC actions, mutate state, or establish new canon. Use only the PLAYER-KNOWN CONTEXT below. Never infer or reveal hidden NPC motives, hidden world facts, undiscovered clues, secret identities, future scripted events, numeric mechanics, or objective probabilities. A hint may remind the player of known information and suggest reasonable approaches; it must not identify a single "correct" path unless the known situation genuinely leaves only one.
+This is optional out-of-character help. It is NOT an in-world action and must not advance time, resolve uncertainty, trigger NPC actions, mutate state, or establish new canon. Use only the PLAYER-KNOWN CONTEXT below. Never infer or reveal hidden NPC motives, hidden world facts, undiscovered clues, secret identities, future scripted events, numeric mechanics, or objective probabilities. A hint may remind the player of known information and suggest reasonable approaches; it must not identify a single "correct" path unless the known situation genuinely leaves only one. Do not recommend repeating a recently failed or fruitless action unless the circumstances have materially changed. If the player has been circling the same scene, suggest a different category of approach or a broader intention.
 
 HINT STYLE:
 ${styleRules[style]||styleRules.gentle}
@@ -923,7 +926,7 @@ ${JSON.stringify(playerFacingHintContext())}`;
   }
 
   function compilerPrompt(form){
-    return `UNIVERSAL RPG CAMPAIGN COMPILER — v0.4.3
+    return `UNIVERSAL RPG CAMPAIGN COMPILER — v0.4.4
 
 Compile the user's campaign request into a compact playable starting state plus a hidden scenario framework. The output structure is enforced by the API schema; focus on correct content rather than explaining the schema.
 
@@ -949,7 +952,7 @@ Scenario framework rules:
 - In Canonical or Adaptive mode, use source-compatible anchors so the campaign has forward structure. In Canonical mode, major near-term source encounters should normally be major canonical anchors.
 - Important near-term source NPCs who are likely to matter in the first few anchors should be compiled as NPCs even if their status is "elsewhere"; they need not be visible to the protagonist yet.
 - Future/spoilery anchors should use visibility="hidden". Only make an anchor public if the protagonist already knows the objective/event exists.
-- At least one opening anchor should normally be active or eligible. Later anchors begin pending until their trigger conditions become true.
+- At least one opening anchor MUST be active or eligible. Later anchors begin pending until their trigger conditions become true. A source-guided campaign with zero anchors is invalid and must not be returned.
 - adaptation_guidance should explain how the event can meet the player naturally if they take a different reasonable route. The world can come to the player; do not require a magic command or exact route.
 - completion_conditions describe what makes the anchor genuinely resolved. blocking_conditions describe facts that would actually make it impossible/inappropriate.
 - director_rules should include campaign-specific principles for pacing, source fidelity, NPC initiative, and avoiding repetitive filler.
@@ -963,7 +966,7 @@ ${JSON.stringify(form)}`;
 
   function adjudicationPrompt(playerText,reviewTier="routine"){
     const pending=state.pending_action?JSON.stringify({intent_summary:state.pending_action.intent_summary,original_text:state.pending_action.original_text,assessment_message:state.pending_action.assessment_message},null,2):"NONE";
-    return `UNIVERSAL RPG — INTENT & ADJUDICATION PHASE v0.4.3
+    return `UNIVERSAL RPG — INTENT & ADJUDICATION PHASE v0.4.4
 
 Classify the player's message before resolving anything. The player may be asking for clarification, asking for a risk assessment, proposing/committing to an action, examining something in-world, communicating, or speaking meta-game.
 
@@ -1034,7 +1037,7 @@ ${playerText}`;
   }
 
   function assessmentPrompt(playerText,adj,preview,requiresConfirmation){
-    return `UNIVERSAL RPG — PLAYER-FACING ASSESSMENT v0.4.3
+    return `UNIVERSAL RPG — PLAYER-FACING ASSESSMENT v0.4.4
 
 Give the player a concise, natural referee assessment before any action is resolved. Use only the CHARACTER-KNOWN assessment data below. Do not reveal numeric probabilities, hidden factors, hidden statistics, objective difficulty, or hidden scenario anchors. Explain the important visible reasons in ordinary language.
 
@@ -1060,7 +1063,7 @@ requires_confirmation: ${requiresConfirmation}`;
   }
 
   function outcomePrompt(playerText,adjudication,resolution){
-    return `UNIVERSAL RPG — OUTCOME & NARRATION PHASE v0.4.3
+    return `UNIVERSAL RPG — OUTCOME & NARRATION PHASE v0.4.4
 
 The resolution engine has already fixed the action outcome. It may be deterministic or probabilistic. Accept the supplied result exactly. Do not reroll it, reverse it, or alter its stated magnitude. Probabilistic magnitude may be marginal_success, solid_success, strong_success, exceptional_success, marginal_failure, failure, severe_failure, or exceptional_failure. Treat magnitude as degree/quality of the resolved result, not permission to invent unrelated consequences.
 
@@ -1082,7 +1085,7 @@ ${JSON.stringify(resolution)}`;
   }
 
   function scenarioRepairPrompt(){
-    return `UNIVERSAL RPG — SCENARIO FRAMEWORK BOOTSTRAP v0.4.3
+    return `UNIVERSAL RPG — SCENARIO FRAMEWORK BOOTSTRAP v0.4.4
 
 Build a scenario framework for an existing migrated campaign that predates scenario anchors. Do NOT rewrite established campaign/world state. Do NOT retroactively assert that undiscovered events already happened. Use the campaign's existing source_mode as binding unless a preserved creation_request explicitly records a different selected source_mode.
 
@@ -1093,6 +1096,10 @@ Source-mode semantics:
 - Original: build original forward structure from the established premise.
 
 Create 3-8 future/current anchors that can move play beyond the present scene. Do not force outcomes or player choices. If a canonical/source detail is not supported by the campaign request/state and you are uncertain, keep the anchor general rather than inventing false precision. The world can come to the player through autonomous NPC action when causally appropriate.
+- At least one opening anchor must be active or eligible.
+- In Canonical/Adaptive source-guided play, include the next major source-compatible encounter/discovery as a major or supporting anchor when it remains causally possible.
+- Return any important near-term NPCs needed by those anchors in npc_additions with status="elsewhere" unless they are already present in the authoritative state. Do not duplicate an existing NPC id.
+- The repair is forward-looking: never claim that an undiscovered event already occurred simply to match the source.
 
 Set director.needs_bootstrap=false. Preserve current turn/place in the director bookkeeping fields.
 
@@ -1104,7 +1111,7 @@ ${JSON.stringify(scenarioBootstrapContext())}`;
   }
 
   function directorPrompt(trigger){
-    return `UNIVERSAL RPG — ADVENTURE DIRECTOR v0.4.3
+    return `UNIVERSAL RPG — ADVENTURE DIRECTOR v0.4.4
 
 You are not resolving the player's just-completed action; that result is already committed. Decide whether the world should now advance on the SAME turn through an eligible scenario anchor, autonomous NPC initiative, scene transition, thread reconciliation, or a causally justified remote development.
 
@@ -1112,6 +1119,7 @@ Director principles:
 - Do not force plot outcomes or player choices.
 - Do not require the player to guess a magic command. If an eligible event or autonomous NPC has reason to reach the protagonist, the world may come to the player.
 - Avoid repetitive filler loops. When the player has substantially explored the same scene or repeated a broad search/travel intention, prefer a meaningful development if one is causally available.
+- If turns_since_development >= 2 or repeat_place_turns >= 2, treat the scene as stalled. In a source-guided campaign, an eligible/active major or supporting anchor should normally advance now unless a blocking condition actually prevents it. Do not answer a stalled scene merely by telling the player to choose another direction or repeat the same search.
 - Canonical mode: preserve compatible canonical anchors and broad sequence. Adapt route, staging, or timing rather than silently dropping the event because the player took a different reasonable path.
 - Adaptive mode: preserve major source anchors/characters but allow freer relocation, reordering, or combination.
 - Inspirational/Original modes: advance only from established campaign logic, NPC agency, open situations, and generation constraints.
@@ -1274,7 +1282,7 @@ ${JSON.stringify(directorContext(trigger))}`;
     }
   }
 
-  function validateScenario(scenario,ownerState=null){
+  function validateScenario(scenario,ownerState=null,{requireAnchors=false}={}){
     if(!scenario||typeof scenario!=="object") throw new Error("Scenario framework is missing.");
     if(!["original","source_guided"].includes(scenario.mode)) throw new Error("Scenario framework has invalid mode.");
     if(!Array.isArray(scenario.anchors)||!Array.isArray(scenario.director_rules)) throw new Error("Scenario framework has invalid anchor/rule collections.");
@@ -1285,6 +1293,19 @@ ${JSON.stringify(directorContext(trigger))}`;
     scenario.director.last_development_turn=Number.isInteger(scenario.director.last_development_turn)?scenario.director.last_development_turn:(ownerState?.turn||0);
     scenario.director.last_place_id=String(scenario.director.last_place_id||ownerState?.world?.current_place?.id||"");
     scenario.director.repeat_place_turns=Number.isInteger(scenario.director.repeat_place_turns)?Math.max(0,scenario.director.repeat_place_turns):0;
+
+    if(requireAnchors && scenario.anchors.length===0) throw new Error("Scenario framework contains no progression anchors.");
+
+    // A source-guided campaign must have something the Director can actually examine at the opening.
+    // If the compiler returned anchors but left all of them pending, promote the earliest non-optional
+    // anchor to eligible rather than allowing a motionless campaign.
+    if(scenario.mode==="source_guided" && scenario.anchors.length){
+      const hasOpening=scenario.anchors.some(a=>["active","eligible"].includes(a.status));
+      if(!hasOpening){
+        const first=scenario.anchors.find(a=>a.status==="pending"&&a.importance!=="optional") || scenario.anchors.find(a=>a.status==="pending");
+        if(first) first.status="eligible";
+      }
+    }
     return scenario;
   }
 
@@ -1295,13 +1316,17 @@ ${JSON.stringify(directorContext(trigger))}`;
     if(typeof c.opening_narration!=="string"||!c.opening_narration.trim()) throw new Error("Campaign compiler omitted opening narration.");
     validateUniqueIds(c.npcs,"NPCs"); validateUniqueIds(c.threads,"Threads"); validateUniqueIds(c.world.known_places||[],"Known places");
     if(c.world.current_place?.id && (c.world.known_places||[]).some(p=>p.id===c.world.current_place.id)===false){ c.world.known_places.push(deepClone(c.world.current_place)); }
+
+    c.scenario=c.scenario&&typeof c.scenario==="object"?c.scenario:legacyScenarioFor({campaign:c.campaign,world:c.world,turn:0});
     if(form?.source_mode){
       // User-selected source mode is authoritative; the model may not silently relabel it.
       c.campaign.source_mode=form.source_mode;
       c.scenario.mode=scenarioModeForSourceMode(form.source_mode);
     }
     c.scenario=validateScenario(c.scenario,{turn:0,world:c.world,campaign:c.campaign});
-    c.scenario.director.needs_bootstrap=false;
+    // Never silently accept an empty campaign framework. A repair pass will run immediately
+    // after compilation and again before play if necessary.
+    c.scenario.director.needs_bootstrap=c.scenario.anchors.length===0 || c.scenario.director.needs_bootstrap===true;
     return c;
   }
 
@@ -1386,8 +1411,10 @@ ${JSON.stringify(directorContext(trigger))}`;
       state.creation_request=deepClone(form);
       state.campaign=compiled.campaign; state.player=compiled.player; state.world=compiled.world; state.npcs=compiled.npcs; state.threads=compiled.threads; state.scenario=compiled.scenario;
       addMessage("narrator",compiled.opening_narration);
-      addEvent("campaign_compiled",{campaign:state.campaign.title,npc_count:state.npcs.length,thread_count:state.threads.length,anchor_count:(state.scenario?.anchors||[]).length,requested_source_mode:form.source_mode,model_source_mode:modelSourceMode,locked_source_mode:state.campaign.source_mode,gateway_version:api.gateway_version});
-      addDebug({phase:"campaign_compile",model:api.model,ai_profile:api.ai_profile,request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,request_metrics:api.request_metrics,structured:true});
+      addEvent("campaign_compiled",{campaign:state.campaign.title,npc_count:state.npcs.length,thread_count:state.threads.length,anchor_count:(state.scenario?.anchors||[]).length,requested_source_mode:form.source_mode,model_source_mode:modelSourceMode,locked_source_mode:state.campaign.source_mode,gateway_version:api.gateway_version,build_id:BUILD_ID});
+      addDebug({phase:"campaign_compile",model:api.model,ai_profile:api.ai_profile,request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,request_metrics:api.request_metrics,structured:true,build_id:BUILD_ID});
+      if(scenarioFrameworkMissing()) await ensureScenarioFramework({force:true});
+      if(!(state.scenario?.anchors||[]).length) throw new Error("Campaign scenario framework is still empty after repair.");
       persist(); el.campaignDialog.close();
     }catch(e){ alert("Campaign creation failed: "+e.message); setStatus("bad","Campaign creation failed"); }
     finally{setBusy(false);}
@@ -1410,20 +1437,46 @@ ${JSON.stringify(directorContext(trigger))}`;
     return {message:api.data.message,preview,api};
   }
 
-  async function ensureScenarioFramework(){
+  function scenarioFrameworkMissing(){
+    if(!state.campaign) return false;
+    state.scenario=normalizeScenario(state.scenario,state);
+    return state.scenario.director.needs_bootstrap===true || !Array.isArray(state.scenario.anchors) || state.scenario.anchors.length===0;
+  }
+
+  function applyScenarioBootstrapNpcs(additions){
+    const incoming=Array.isArray(additions)?additions:[];
+    if(!incoming.length) return 0;
+    validateUniqueIds(incoming,"Scenario bootstrap NPCs");
+    const existing=new Set((state.npcs||[]).map(n=>n.id));
+    let added=0;
+    for(const npc of incoming){
+      if(existing.has(npc.id)) continue;
+      state.npcs.push(deepClone(npc));
+      existing.add(npc.id);
+      added+=1;
+    }
+    return added;
+  }
+
+  async function ensureScenarioFramework({force=false}={}){
     if(!state.campaign) return;
     state.scenario=normalizeScenario(state.scenario,state);
-    if(!state.scenario.director.needs_bootstrap) return;
+    const missing=scenarioFrameworkMissing();
+    if(!force && !missing) return;
+    // Do not silently invalidate a player decision already awaiting confirmation.
     if(state.pending_action) return;
+
     setStatus("","Building scenario framework...");
     const api=await callWorker(scenarioRepairPrompt(),"scenario_compile","world_generate");
-    const repaired=validateScenario(api.data.scenario,state);
+    const repaired=validateScenario(api.data.scenario,state,{requireAnchors:true});
     repaired.mode=scenarioModeForSourceMode(state.campaign.source_mode);
     repaired.director.needs_bootstrap=false;
+
+    const npcAdded=applyScenarioBootstrapNpcs(api.data.npc_additions);
     state.scenario=repaired;
     state.revision+=1;
-    addEvent("scenario_framework_bootstrapped",{source_mode:state.campaign.source_mode,anchor_count:repaired.anchors.length,model:api.model});
-    addDebug({phase:"scenario_bootstrap",model:api.model,ai_profile:api.ai_profile,request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,request_metrics:api.request_metrics,anchor_count:repaired.anchors.length});
+    addEvent("scenario_framework_bootstrapped",{source_mode:state.campaign.source_mode,anchor_count:repaired.anchors.length,npcs_added:npcAdded,model:api.model,build_id:BUILD_ID});
+    addDebug({phase:"scenario_bootstrap",model:api.model,ai_profile:api.ai_profile,request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,request_metrics:api.request_metrics,anchor_count:repaired.anchors.length,npcs_added:npcAdded,build_id:BUILD_ID});
   }
 
   function meaningfulDevelopment(summary={}){
@@ -1447,12 +1500,13 @@ ${JSON.stringify(directorContext(trigger))}`;
     const activeOrEligible=(state.scenario.anchors||[]).some(a=>["eligible","active"].includes(a.status)&&a.importance!=="optional");
     const sourcePending=state.scenario.mode==="source_guided"&&(state.scenario.anchors||[]).some(a=>a.status==="pending"&&a.importance!=="optional");
     if(activeOrEligible) return true;
-    if((d.turns_since_development||0)>=2) return true;
-    // Pending source anchors are checked when play actually changes the situation, or after a little pressure builds.
-    // This prevents a separate Director model call after every trivial action while still allowing the world to move.
+    // Hard stall breaker: two committed turns without a meaningful change always deserve a Director check.
+    if((d.turns_since_development||0)>=2 || (d.repeat_place_turns||0)>=2) return true;
+    // Source-guided campaigns should not make the player hunt for a magic command. Once pressure begins,
+    // check pending anchors after ordinary exploration, conversation, travel, or rest.
     if(sourcePending && meaningfulDevelopment(summary)) return true;
     if(sourcePending && ["travel","move","observe","communicate","rest"].includes(adj?.action_kind) && (d.turns_since_development||0)>=1) return true;
-    if(["travel","move"].includes(adj?.action_kind)&&!meaningfulDevelopment(summary)&&(d.turns_since_development||0)>=1) return true;
+    if(["travel","move","observe"].includes(adj?.action_kind)&&!meaningfulDevelopment(summary)&&(d.turns_since_development||0)>=1) return true;
     return false;
   }
 
@@ -1533,12 +1587,23 @@ ${JSON.stringify(directorContext(trigger))}`;
     await resolveCommittedAction(pending.original_text,pending.adjudication);
   }
 
-  function simplePendingDisposition(text){
-    const t=String(text||"").trim().toLowerCase().replace(/[.!?]+$/g,"").trim();
+  function normalizePendingText(text){
+    return String(text||"").trim().toLowerCase().replace(/[.!?]+$/g,"").replace(/\s+/g," ").trim();
+  }
+
+  function simplePendingDisposition(text,pending=null){
+    const t=normalizePendingText(text);
     const confirms=new Set(["yes","yeah","yep","do it","go ahead","proceed","fire","take the shot","i do it","i'll do it","continue"]);
     const cancels=new Set(["no","nope","cancel","stop","hold off","don't","do not"]);
     if(confirms.has(t)) return "confirm";
     if(cancels.has(t)) return "cancel";
+
+    // Repeating the already-assessed action is a confirmation, not a new AI adjudication.
+    if(pending?.original_text && t===normalizePendingText(pending.original_text)) return "confirm";
+
+    // Natural confirmations such as "Yes, search for survivors" are local unless they contain
+    // explicit replacement language that could change the plan.
+    if(/^(yes|yeah|yep)\b/.test(t) && !/\b(but|instead|however|except|change|rather)\b/.test(t)) return "confirm";
     return null;
   }
 
@@ -1556,7 +1621,7 @@ ${JSON.stringify(directorContext(trigger))}`;
     addMessage("player",text); render(); setStatus("","Interpreting...");
     try{
       if(state.pending_action){
-        const localDisposition=simplePendingDisposition(text);
+        const localDisposition=simplePendingDisposition(text,state.pending_action);
         if(localDisposition==="confirm"){
           addDebug({phase:"pending_local_confirm",ai_used:false,pending_before:before.pending_action?.intent_summary||null});
           await confirmPending(text);
