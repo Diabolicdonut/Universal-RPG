@@ -1,3 +1,93 @@
+## Version 0.6.1
+Date: 2026-09-28
+
+### Milestone
+Implemented the **First-Contact / Existing-NPC Realization Hotfix** after the supplied v0.6.0 Dinotopia turn-10 debug export exposed two independent progression defects: an already-compiled offscreen NPC could be returned again as an `npc_addition` when first encountered, causing the entire transaction to fail as a duplicate ID; and every Adventure Director request in the test run was being rejected locally because the 5,000-token Director preflight ceiling was slightly below the actual compact request size.
+
+No Cloudflare Worker changes are required. Save schema remains 5 and the browser state key remains `universalRpg.state.v0_6`.
+
+### Failure reproduced from the supplied turn-10 save
+The campaign compiler had correctly created `npc_bix` at campaign start with status `elsewhere`, and `anchor_bix_first_contact` was active/eligible. By turn 8-10 the player had followed the three-toed tracks to a voice behind foliage. On attempting to continue to the source, the runtime twice reported:
+
+`Interaction failed before any world-state changes were committed: NPC id npc_bix already exists.`
+
+The transaction safety behavior was correct: the failed interaction did not partially commit state. The defect was identity/update semantics. The outcome/world layer attempted to realize an already-established offscreen NPC by adding that NPC a second time instead of transitioning the established record into the scene.
+
+### Existing-NPC identity registry
+Runtime outcome and Adventure Director context now include a compact `existing_npcs` identity registry containing relevant established NPC ids, names, statuses, and roles. Relevance ranking considers both the current query and active/eligible scenario anchors, allowing a source-critical NPC such as Bix to remain visible to the semantic layer even while the NPC is still offscreen.
+
+Outcome and Director prompts now explicitly require:
+- an NPC id already listed in `existing_npcs` must never be returned as `npc_additions`;
+- an established offscreen NPC entering the scene should normally use `npc_status_changes` (for example, `elsewhere -> present`);
+- the established NPC profile remains authoritative and must not be regenerated or overwritten;
+- `npc_additions` is reserved for genuinely new NPCs with new stable ids;
+- scenario progress should update the existing anchor through `scenario_anchor_status_changes` rather than recreating its associated NPC or event.
+
+### Defensive existing-entity reconciliation
+`applyUpdates()` now provides a deterministic safety net if a model nevertheless returns an already-established NPC in `npc_additions`:
+- if the incoming id does not exist, the NPC is added normally;
+- if the id exists and the name matches the established identity, the existing profile is preserved and only the incoming status is reinterpreted as a status transition when needed;
+- the duplicate payload is never allowed to overwrite established public/hidden NPC data;
+- if the same id is paired with a conflicting name, the transaction still fails safely;
+- conflicting explicit and implicit status changes also fail safely;
+- reconciled existing NPC realization is counted as meaningful development for scenario-pressure bookkeeping.
+
+This converts the exact Bix failure shape from `duplicate NPC -> abort` into `existing Bix -> status transition -> continue encounter` while retaining strict identity protection.
+
+### Adventure Director request-budget correction
+The supplied run attempted a Director check after every committed turn, but all ten checks were blocked before API submission by the old 5,000-token local ceiling. Observed estimates ranged from about 5,107 to 5,458 tokens.
+
+v0.6.1:
+- raises the Director preflight ceiling from 5,000 to 6,000 approximate tokens;
+- further compacts Director context to reduce routine payload size (3 facts, 3 relevant NPCs, 4 threads, 3 relevant anchors, and 2 recent events);
+- retains the same trigger logic and Sol/Low Director routing.
+
+The new ceiling covers every Director request size observed in the supplied 10-turn test while still preserving a hard local request bound.
+
+### Build identity
+- Application version: `0.6.1`
+- Build ID: `2026-09-28a`
+- Save schema: 5
+- Browser state key: `universalRpg.state.v0_6`
+- Probability Engine: 1.0
+- Local Resolution Engine: 1.1
+- Cloudflare Worker: unchanged
+
+### Existing-save behavior
+The supplied v0.6.0 turn-10 save is expected to remain usable in v0.6.1. Because the duplicate-Bix failures occurred before any world-state changes were committed, the pending approach action remains intact rather than leaving a half-created encounter. v0.6.1 uses the same schema and browser state key, so replacing the frontend and hard-refreshing should preserve the current campaign. The player can then confirm/continue the pending action again.
+
+### Validation performed
+- Extracted the embedded JavaScript from the patched HTML and passed `node --check` successfully.
+- Ran a focused deterministic regression reproducing the Bix failure shape: an existing `npc_bix` with status `elsewhere` plus an incoming `npc_addition` for the same id/name with status `present`. The patch preserved one Bix record, preserved the established profile, synthesized one status transition to `present`, and reported one reconciliation.
+- Confirmed a genuinely new NPC still adds normally.
+- Confirmed a conflicting name under an established NPC id still throws rather than silently merging identities.
+- Parsed the supplied debug export and confirmed 10/10 historical Director attempts were blocked by the 5,000-token cap; the largest observed estimate was ~5,458 tokens, below the new 6,000-token ceiling.
+- Confirmed application/UI/prompt build labels are v0.6.1 and build ID is `2026-09-28a`.
+- Confirmed state key remains `universalRpg.state.v0_6` and no Worker change is required.
+
+A full headless-browser regression was attempted in the local artifact environment but the Chromium harness did not complete reliably, so this checkpoint does not claim an end-to-end browser test. The deterministic reconciliation and JavaScript syntax checks passed.
+
+### Remaining observations from the validation run
+The v0.6.0 run was materially healthier than the earlier Dinotopia tests: the compiler produced three NPCs, five scenario anchors, and an eligible Bix first-contact anchor; the player reached the tracks and audible first-contact area through ordinary play. The immediate failure was therefore no longer a missing scenario framework but the transition from a precompiled offscreen entity to an onscreen entity.
+
+The run still recorded zero compiled runtime-route resolutions. Only one opening route was precompiled, so most newly discovered movement continued through referee/outcome handling. Runtime place/route-extension transactions remain the next architectural requirement if exploration is to become increasingly deterministic after the opening area.
+
+### Known limitations
+- Runtime place/route extension is not yet implemented; newly discovered geography still relies on referee/world transactions.
+- Director content remains model-assisted; only its trigger timing is local. Full deterministic anchor trigger/completion evaluation remains future work.
+- Existing-NPC realization currently uses status as the principal presence transition. A later entity-location model should distinguish presence/location more explicitly rather than overloading status alone.
+- Resources, survival/recovery, typed equipment, executable hazards, combat/injury, and deterministic NPC utility remain future runtime layers.
+
+### Recommended verification
+1. Replace the v0.6.0 frontend with v0.6.1 and hard-refresh.
+2. Continue the existing turn-10 Dinotopia campaign rather than starting over.
+3. Confirm the pending action to continue toward the voice.
+4. Verify the interaction no longer fails with `NPC id npc_bix already exists` and that the established Bix record is realized rather than duplicated.
+5. Continue for several turns and export Debug.
+6. Verify Director entries are now successful `director` / `director_noop` calls rather than repeated `director_error` budget blocks.
+7. Verify there remains exactly one `npc_bix` record and that the Bix first-contact anchor advances/completes appropriately when contact occurs.
+
+---
 ## Version 0.6.0
 Date: 2026-09-26
 
