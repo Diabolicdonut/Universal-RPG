@@ -1,3 +1,403 @@
+## Version 0.6.0
+Date: 2026-09-26
+
+### Milestone
+Implemented the first **Compiled Runtime Package** layer. This is the first concrete step toward the Known World architecture: the campaign compiler now emits deterministic campaign-local game data that the browser engine can consult directly, instead of asking the model to reinterpret ordinary movement/rest rules during play. The Sol-first compiler and Astra escalation policy introduced in v0.5.1 remain in place. No Cloudflare Worker changes are required.
+
+### Architectural goal
+Campaign creation is increasingly treated as a compile step:
+
+`Premise/source material -> Sol/High compiler -> deterministic runtime package -> local JavaScript play`
+
+AI remains available for ambiguous language, autonomous NPC cognition, constrained world generation, difficult social reasoning, and rich narration, but the engine is beginning to own campaign-specific rules/data directly.
+
+### Save schema 5
+- `SCHEMA_VERSION` is now 5.
+- Browser state key is now `universalRpg.state.v0_6`.
+- Existing schema-4 saves migrate automatically.
+- Older saves receive a conservative legacy runtime package with `route_policy="permissive"` so existing campaigns do not suddenly lose previously available movement behavior.
+- New campaigns compile an explicit campaign-specific runtime package.
+
+### New Compiled Runtime Package
+New campaign compilation now produces a required `runtime` object containing:
+
+**Action demands**
+- Stable action ids.
+- Universal verb (`move`, `travel`, `observe`, `search`, `rest`, `track`, `climb`, `attack`, `operate`, `pilot`, etc.).
+- Capability tags.
+- Intrinsic default difficulty.
+- Resolution mode (`deterministic`, `conditional`, `uncertain`).
+- Consequence tags.
+- Notes for engine/referee interpretation.
+
+**Routes**
+- Stable route id.
+- From/to place ids.
+- Bidirectionality.
+- Travel mode.
+- Time hint.
+- Intrinsic route difficulty.
+- Capability tags.
+- Requirements.
+- Hazard references.
+- Visibility.
+
+**Hazards**
+- Stable hazard id/name.
+- Trigger.
+- Visibility.
+- Severity.
+- Resistance capability tags.
+- Intrinsic difficulty.
+- Consequences.
+
+**Rest profile**
+- Campaign-specific brief-rest time hint.
+- Whether limited brief-rest recovery is even permitted.
+- Full-rest requirements.
+- Notes.
+
+### Compiler requirements
+For new campaigns the compiler is instructed to:
+- use `route_policy="explicit"`;
+- compile at least the common opening verbs: move, travel, observe, search, rest;
+- add genre-relevant verbs where appropriate;
+- compile only opening routes whose endpoints already exist in the known-place package;
+- represent reusable route hazards as typed records rather than prose-only warnings;
+- keep the runtime package compact rather than generating an encyclopedia;
+- avoid granting healing/recovery through rest unless the campaign's rules justify it.
+
+### Deterministic compiler validation expanded
+The local compiler validator now checks runtime-package invariants before committing a new campaign:
+- new campaigns must use explicit route policy;
+- at least five common action demands must exist;
+- required common verbs must be present;
+- action, route, and hazard ids must be unique;
+- every route endpoint must resolve to a compiled known place;
+- every route hazard reference must resolve to a compiled hazard;
+- the existing scenario/source-mode checks from v0.5.1 remain enforced.
+
+A failed runtime package is repaired by Sol/High first. Astra/High remains the final escalation path only if the Sol repair still fails deterministic validation.
+
+### Local route resolution
+Known-place movement now consults compiled route data before assuming geography.
+
+For a new campaign with `route_policy="explicit"`:
+- if no compiled route connects the current place to the requested known destination, the local engine does **not** teleport/assume connectivity; the request falls through to the referee/world layer;
+- an established route with no requirements/hazards and `difficulty=none` or `routine` resolves entirely in JavaScript;
+- a compiled route with an intrinsic difficulty above routine can build its probability locally from the protagonist's best capability matching the route tags;
+- the risk checkpoint is generated locally;
+- confirmation is handled locally;
+- RNG/probability is local;
+- success changes the current place locally;
+- failure leaves the protagonist short of the destination;
+- no AI adjudication call is used for that route resolution.
+
+Routes with typed hazards or explicit requirements currently fall back to the referee until the dedicated hazard/requirement subsystem is implemented. This is deliberate: v0.6.0 does not pretend those mechanics are finished.
+
+### Local rest now reads compiled rules
+Brief `rest` actions now use the campaign's compiled `rest_profile` rather than a universal hard-coded assumption. The engine still does not invent HP/condition recovery. If the profile allows limited recovery, the current implementation reports that policy but waits for a future recovery subsystem to define concrete condition changes.
+
+### Capability selection for compiled actions
+The local engine can now select the protagonist's strongest relevant capability by matching compiled capability tags. This is used by uncertain compiled-route travel and is the first campaign-data-driven replacement for AI-selected difficulty/capability pairing.
+
+### Debug additions
+Developer/debug output now reports:
+- runtime package version;
+- route policy;
+- action-demand count;
+- route count;
+- hazard count;
+- local runtime route checkpoints;
+- local runtime route resolutions.
+
+`LOCAL_RESOLUTION_ENGINE_VERSION` is now 1.1 and Context Policy is 2.2.
+
+### Sol-first compiler retained
+- Primary campaign compile: GPT-6 Sol / High.
+- Targeted compiler repair: GPT-6 Sol / High.
+- Scenario compile/bootstrap: GPT-6 Sol / High.
+- Ordinary constrained world generation: GPT-6 Sol / High.
+- Astra / High: only failed compiler repair or exceptional reasoning/reconciliation paths.
+
+### Validation performed
+- Embedded JavaScript extracted and passed `node --check` after all v0.6.0 changes.
+- Confirmed `APP_VERSION = 0.6.0`, build `2026-09-26d`, schema 5.
+- Confirmed schema-4 saves migrate to schema 5 and receive a normalized runtime package.
+- Confirmed campaign compiler schema requires the new runtime package.
+- Confirmed new-campaign validation requires explicit route policy and common action verbs.
+- Confirmed local route movement no longer assumes all known places are mutually reachable in newly compiled campaigns.
+- Confirmed route probability uses the existing local Probability Builder rather than an AI roll.
+- Confirmed Cloudflare Worker remains unchanged.
+
+### Known limitations
+- The runtime package currently covers action-demand metadata, routes, hazards, and rest policy only. Equipment, weapons, beings/creatures, vehicles, resources, social procedures, combat, injury, and recovery still need formal deterministic schemas.
+- Hazard/route-requirement resolution is typed but not yet executed locally; such routes intentionally fall back to AI/referee handling.
+- The compiler only knows the starting known-place graph. Newly generated places/routes need a constrained runtime-extension transaction when discovered.
+- Action demands are compiled but only route movement/rest consume them mechanically so far.
+- NPC cognition is still model-assisted for routine dialogue and complicated social scenes.
+- Source accuracy still depends on the model/source material; deterministic validators check consistency/invariants, not historical/canon truth.
+
+### Recommended next implementation
+Continue the deterministic runtime conversion in this order:
+1. **Place/route extension transactions** for newly discovered geography.
+2. **Resource + survival + rest/recovery subsystem**.
+3. **Typed item/equipment package**.
+4. **Hazard execution**.
+5. **Combat/injury package** using Damage / Penetration / Range / Handling / Scale / Traits.
+6. **NPC utility engine** for routine autonomous decisions.
+7. **Scenario-anchor trigger evaluation in JavaScript** so the Adventure Director becomes mostly deterministic.
+
+The target remains: expensive compilation once; ordinary runtime cost and behavior should resemble the Known World engine rather than an AI adjudication loop.
+
+---
+
+## Version 0.5.1
+Date: 2026-09-26
+
+### Milestone
+Implemented **Sol-First Campaign Compilation + Deterministic Compiler Validation/Repair**. GPT-6 Sol / High is now the default model for campaign construction, scenario bootstrap, and ordinary constrained world generation. GPT-6 Astra / High is retained as an escalation path only when a Sol-generated campaign package still fails local deterministic validation after one targeted Sol repair pass. No Cloudflare Worker changes are required.
+
+### Why this iteration was necessary
+The previous compiler routed every new campaign to GPT-6 Astra / High even though most campaign construction is structured generation into a strict schema. This made the expensive model the default rather than the exception. The new architecture follows the same principle as runtime play: **use local code to validate deterministic requirements, use Sol for normal semantic/content work, and pay for Astra only when a real validation failure demonstrates that more reasoning is justified.**
+
+### Model routing changes
+- `campaign_compile` -> **GPT-6 Sol / High** (default primary compiler).
+- `campaign_compile_repair` -> **GPT-6 Sol / High** (targeted repair only when local validation finds issues).
+- `campaign_compile_escalation` -> **GPT-6 Astra / High** (used only if the Sol repair still fails validation).
+- `scenario_compile` -> **GPT-6 Sol / High**.
+- `world_generate` -> **GPT-6 Sol / High**.
+- `world_generate_complex` -> **GPT-6 Astra / High** reserved for future exceptional world/source reconciliation paths.
+- Runtime referee/narration routing from v0.5.0 remains unchanged.
+
+### Compiler pipeline
+New campaigns now use this pipeline:
+
+1. **Primary compile — Sol/High**
+   - Generates the complete starting campaign package using the strict `campaign_compile` schema.
+2. **Local deterministic validation**
+   - Browser checks structural/runtime invariants and scenario health without an AI call.
+3. **Targeted repair — Sol/High (only if needed)**
+   - Receives the failed package plus the exact validation issues and returns a complete corrected package.
+4. **Astra escalation — Astra/High (only if Sol repair still fails)**
+   - Receives only the remaining validation failures and the repaired candidate.
+5. **Commit**
+   - The campaign is stored only after the package passes local validation.
+
+A valid first-pass Sol compilation therefore incurs **one compiler model call**, not an automatic Astra call.
+
+### Deterministic compiler validation
+The browser now checks the generated package for runtime-critical invariants including:
+- requested `source_mode` fidelity;
+- valid campaign/player/world envelope;
+- unique NPC, thread, place, and anchor IDs;
+- stable lowercase identifier format for core entities;
+- current place represented in `known_places`;
+- at least one opening thread;
+- normally 3-8 scenario anchors;
+- at least one opening anchor with `active` or `eligible` status;
+- no `needs_bootstrap=true` flag in a newly compiled healthy scenario;
+- Canonical/Adaptive campaigns contain substantive source-guided anchors;
+- Canonical campaigns contain at least one major/supporting canonical anchor.
+
+Validation errors are converted into explicit repair instructions rather than silently accepted or requiring the player to discover the defect during play.
+
+### Source-mode protection
+The user's selected source mode remains authoritative. If the primary model returns a different `campaign.source_mode`, the local validator records it as a compiler defect and requests a repair. The runtime still force-locks the selected source mode as a final safety measure.
+
+### Scenario bootstrap cost correction
+The v0.4.4 missing-scenario repair path previously used the `world_generate` profile, which was Astra/High. It now uses the dedicated **Sol/High `scenario_compile`** profile. Existing/migrated campaigns that need their scenario framework rebuilt therefore no longer escalate to Astra merely because anchors are missing.
+
+### Debug/audit instrumentation
+Campaign compilation events now record:
+- number of compiler passes;
+- whether Astra escalation occurred;
+- final compiler model;
+- per-pass phase (`campaign_compile_primary`, `campaign_compile_repair`, or `campaign_compile_escalation`);
+- request/usage metrics for each actual API call.
+
+This makes it possible to measure how often Sol succeeds on the first pass and whether Astra is actually buying value.
+
+### Request budgets
+Added separate local request ceilings for compiler repair/escalation because a repair request includes the candidate package plus deterministic validation errors:
+- primary campaign compile: ~18k estimated input tokens;
+- Sol repair: ~26k;
+- Astra escalation: ~26k;
+- scenario compile: ~18k;
+- routine world generation: ~18k;
+- exceptional world generation: ~22k.
+
+These remain local preflight ceilings; an over-budget request is blocked before the API call.
+
+### Validation performed
+- Embedded JavaScript extracted from `index.html` and passed `node --check`.
+- Confirmed `APP_VERSION = 0.5.1` and build `2026-09-26c`.
+- Confirmed primary campaign compiler routes to `gpt-6-sol` / `high`.
+- Confirmed targeted repair routes to `gpt-6-sol` / `high`.
+- Confirmed compiler escalation routes to `gpt-6-astra` / `high`.
+- Confirmed scenario bootstrap routes to `scenario_compile` (Sol/High) rather than Astra-backed world generation.
+- Confirmed compiler request budgets include the new repair/escalation profiles.
+- Cloudflare Worker remains unchanged.
+
+### Known issues / next compiler work
+- Campaign compilation is still a **single primary structured generation pass plus conditional repair**, not yet the full multi-stage deterministic campaign compiler envisioned for v1.0.
+- The current campaign package does not yet precompile formal universal tables for equipment, hazards, creatures, vehicles, routes, action demands, encounter tables, and other deterministic runtime nouns. Those should be introduced incrementally as the Universal Runtime Rules Layer matures.
+- Local compiler validation currently checks structural/scenario invariants. It cannot yet prove factual source accuracy or subtle canon consistency; difficult source reconciliation is where the Astra escalation path remains useful.
+- Source PDFs/modules are not yet ingested directly by the compiler.
+- Future compiler passes should generate deterministic runtime content tables rather than repeatedly asking runtime AI to infer difficulty or object behavior.
+
+### Recommended next step
+Build the first **Compiled Runtime Package** layer: formal campaign-local data for skills/capabilities, places/routes, items/equipment, hazards, beings/creatures, and deterministic action demands. The runtime should consult those tables before any AI adjudication, bringing Universal RPG progressively closer to the Known World model: expensive compile once, cheap deterministic play thereafter.
+
+---
+
+## Version 0.5.0
+Date: 2026-09-26
+
+### Milestone
+Implemented **Local Resolution Core v1.0 + Hard Runtime Request Budgets**. This iteration moves routine play back toward the intended architecture: **the engine decides, the database remembers, and AI is used only when semantic reasoning, NPC cognition, constrained world interpretation, or rich narration is genuinely needed.** No Cloudflare Worker changes are required.
+
+### Why this iteration was necessary
+The turn-11 Dinotopia save showed that ordinary Sol adjudication prompts still grew from roughly 5.7k input tokens near the beginning of play to roughly 10.6k input tokens by turn 10. The prior v0.4.3/v0.4.4 compaction bounded arrays but did not actually make routine requests fixed-size; it also still sent simple engine-resolvable actions such as known-place movement and basic status questions through the full referee schema.
+
+### Local Resolution Core v1.0
+The browser engine now attempts a conservative local pass **before** a general AI adjudication call.
+
+Handled without an AI adjudication call when the engine has enough authoritative information:
+- pending-action confirmation/cancellation;
+- inventory queries;
+- current-location queries;
+- current-condition queries;
+- immediate `look around` / surroundings queries;
+- movement to an already established, unambiguous known place when no established obstacle requires adjudication and present companions have established reasons to stay with the protagonist;
+- brief ordinary rest (`rest`, `take a break`, `catch my breath`, etc.) without granting unearned healing/recovery;
+- player-facing consequence/risk assessment wording after adjudication;
+- probability calculation, RNG, magnitude, state mutation, and scenario-pressure bookkeeping (already local, retained).
+
+Local resolutions are written to debug/event history as `local_resolution` or `local_clarification` and report `ai_used:false`.
+
+### Narrow AI paths instead of full referee calls
+Two new small structured-output modes were added:
+
+**`clarify`**
+- answers ordinary player-known questions that cannot be answered directly from structured state;
+- cannot advance time or mutate state;
+- receives only a tiny player-known context packet;
+- intended for practical questions such as asking what the currently established circumstances imply.
+
+**`npc_reply`**
+- handles routine conversation/advice with a present autonomous NPC;
+- receives only the relevant NPC's shallow profile, a few relevant knowledge entries, current scene, and the player's line;
+- may refine only that NPC's current intention;
+- contested social actions (persuasion, deception, intimidation, negotiation, etc.) still fall back to proper adjudication.
+
+This means a line such as `Father, what should we do now?` no longer requires the full adjudication schema/state packet.
+
+### Local assessment generation
+The separate Sol assessment call has been removed from normal play. Once adjudication provides perceived difficulty/factors/stakes, local JavaScript now converts that into natural player-facing risk language and asks for confirmation when needed. Numeric probabilities and hidden factors remain private.
+
+This removes one API call from every consequence checkpoint.
+
+### Compact adjudication schema
+Routine adjudication no longer returns narration, state updates, or NPC actions. It now only classifies/adjudicates:
+- intent and pending disposition;
+- commitment;
+- complexity/escalation;
+- action kind/possibility;
+- consequence/checkpoint/resolution requirements;
+- capability/difficulty/factors/stakes;
+- character-perceived assessment.
+
+The engine owns commitment and resolution. If an AI-adjudicated action is actually committed, a separate outcome phase is called only when prose/new world-state interpretation is needed. This substantially reduces the schema sent with every ordinary adjudication request.
+
+### Context Policy v2.0
+Routine context was made much smaller and more relevance-oriented:
+- 1 recent narrator message instead of a rolling conversation block for routine adjudication;
+- compact campaign kernel instead of the full runtime campaign constitution;
+- 4 relevant facts, 4 knowledge entries, 8 inventory entries maximum by default;
+- 2 routine NPCs and 2 active/eligible anchors by default;
+- 3 open threads;
+- shallow NPC records for routine adjudication;
+- deeper context retained only for Medium/Astra review.
+
+The compact campaign kernel contains only title/source mode, short tone/era, two core foundation rules, and two prohibitions. The authoritative full campaign remains local in the database.
+
+### Hard request budgets
+Added local approximate input-token budgets. The browser estimates system + task prompt + structured-output schema **before** sending a request. If an ordinary request exceeds its configured cap, it is blocked locally before an API charge rather than silently growing forever.
+
+Current approximate caps:
+- routine adjudication: 6,500 tokens;
+- Sol/Medium adjudication: 8,000;
+- Astra exceptional adjudication: 10,500;
+- narrow clarification: 2,200;
+- routine NPC reply: 2,600;
+- assessment: 1,800 (retained only as a compatibility profile; normal assessment is now local);
+- hint: 2,800;
+- routine narration/outcome: 5,200;
+- significant narration: 6,500;
+- Adventure Director: 5,000;
+- campaign/scenario compilation and major world generation: 18,000.
+
+Debug request metrics now record the applicable budget and budget utilization.
+
+### Adventure Director call reduction
+The engine now decides **when** a Director check is warranted. Merely having an active/eligible anchor no longer causes an unconditional Director API call after every committed action.
+
+A Director call is now triggered by local conditions such as:
+- genuine stagnation (`turns_since_development >= 2` or repeated-place pressure);
+- meaningful development while an active/eligible non-optional anchor exists;
+- movement/travel/observation/conversation/rest when an active anchor exists and progression pressure has begun;
+- later source-guided exploration after sufficient stagnation.
+
+The local trigger is logged as `director_trigger_local`; AI is still used when the actual *form* of the development requires semantic/source-sensitive adaptation.
+
+### Debug improvements
+Debug export now includes:
+- `local_resolution_engine_version: 1.0`;
+- build ID `2026-09-26b`;
+- Context Policy v2.0;
+- request-token budgets;
+- budget utilization per API call;
+- API-only request-size averages (local zero-token events no longer distort them);
+- `local_engine_usage`, including local resolutions, local clarifications, local assessments, narrow NPC/clarification calls, API call count, API input tokens, and API output tokens.
+
+### Measured fixture checks
+Using the supplied turn-11 Dinotopia save as a test fixture, local request-size estimation produced approximately:
+- routine adjudication: **~3,880 input tokens** including system prompt + task prompt + schema;
+- narrow clarification: **~956**;
+- routine NPC reply: **~1,152**;
+- outcome/narration: **~3,222**.
+
+These are local character-based estimates, not OpenAI billing-token counts, but they are materially below the previous 5.7k–10.6k ordinary adjudication range and all fall under their configured hard caps.
+
+### Validation performed
+- Extracted embedded JavaScript and passed `node --check`.
+- Ran a stubbed browser/runtime harness against the supplied turn-11 save.
+- Verified `where am i` resolves locally at turn 11 without calling the API or advancing the turn.
+- Verified `rest` resolves locally, advances one turn, produces a `local_resolution` debug entry, and does not grant unearned condition recovery.
+- Verified the routine campaign kernel is compact.
+- Verified a routine NPC target such as Arthur is recognized for `Father what should we do now?` and routes to the narrow NPC path.
+- Verified current prompt/schema character estimates remain below configured budgets for routine adjudication, clarification, NPC reply, and narration.
+- Confirmed no v0.4.4/build `2026-09-26a` identifiers remain in the v0.5.0 HTML.
+
+### Known limits / intentionally deferred work
+- The local parser is deliberately conservative. Unfamiliar, compound, ambiguous, contested, tactical, or world-generating actions still fall back to AI adjudication rather than guessing.
+- Local movement currently resolves only to already-established known places with an unambiguous match; a full graph/distance/travel engine is still future work.
+- Brief local rest consumes a turn but does not yet implement a universal recovery/time-duration subsystem.
+- Routine NPC conversation still uses Sol because autonomous NPC cognition is intentionally semantic; contested social interactions use the referee path.
+- Outcome/narration still carries the richer update schema because genuinely new discoveries, places, items, NPCs, or facts may need to be committed there. A future typed patch system could reduce this further.
+- Hard budgets are conservative local estimates based on serialized character count; actual tokenizer counts may differ. The next debug export should be used to calibrate caps against real API usage.
+
+### Recommended verification
+1. Upload v0.5.0 and hard-refresh the GitHub Pages page.
+2. Import an existing v0.4.x save or start a new campaign.
+3. Test `where am I?`, `inventory`, `how do I feel?`, `look around`, a brief `rest`, and movement to an already-known named place; verify appropriate actions show `local_resolution` / `local_clarification` in Debug and consume zero API input tokens.
+4. Ask a present companion a routine question such as `Father, what should we do?`; verify Debug shows `npc_reply` rather than a full `adjudication` call.
+5. Perform a genuinely uncertain/contested action and verify the normal adjudication → local assessment/checkpoint → local probability → outcome pipeline still works.
+6. Export Debug after 10-20 turns and compare `diagnostic_summary.local_engine_usage`, `request_size_summary`, and per-call `budget_utilization` against the v0.4.3/v0.4.4 reports.
+
+---
+
 ## Version 0.4.4
 Date: 2026-09-26
 

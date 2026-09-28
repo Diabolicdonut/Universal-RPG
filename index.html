@@ -47,7 +47,7 @@
 <body>
 <div class="app" id="app">
   <header>
-    <div class="brand">Universal RPG</div><div class="version">v0.4.4</div>
+    <div class="brand">Universal RPG</div><div class="version">v0.6.0</div>
     <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Not connected</span></div>
     <div class="spacer"></div>
     <button class="btn small" id="newBtn">New Campaign</button>
@@ -87,7 +87,7 @@
     <div class="field full"><label>Worker endpoint</label><input id="workerUrl" value="https://universal-rpg.diabolicdonut.workers.dev" /></div>
     <div class="field full"><label>Game token</label><input id="gameToken" type="password" autocomplete="off" placeholder="Enter GAME_TOKEN" /><div class="help">The token is never placed in this HTML file. It is sent only to your Worker as a Bearer token.</div></div>
     <label class="check full"><input type="checkbox" id="rememberToken" /> Remember token on this device (localStorage). If unchecked it lasts only for this browser tab.</label>
-    <div class="field full help">Cost routing: GPT-6 Sol / Low handles routine referee work, clarification, assessments, ordinary conversation, and routine narration. GPT-6 Sol / Medium handles important NPC decisions, meaningful conversations, deception, negotiation, relationship-changing scenes, hidden-information reasoning, multi-actor scenes, and significant adjudication. GPT-6 Astra / High is reserved for campaign compilation, major world generation, and rare exceptional adjudication. Probability and authoritative state remain local.</div>
+    <div class="field full help">Local-first routing: the browser engine now handles common clarification, known-place movement, rest, pending confirmations, consequence checkpoints, probability/RNG, state mutation, and scenario-pressure bookkeeping without AI. GPT-6 Sol / Low is used only when semantic interpretation, ordinary NPC cognition, world-sensitive adjudication, or rich narration is actually needed. Sol / Medium handles difficult NPC/social reasoning; Astra / High remains reserved for campaign compilation, major world generation, and rare exceptional adjudication.</div>
   </div>
   <div class="modal-actions"><button class="btn" id="testBtn">Test Worker</button><button class="btn primary" id="settingsSaveBtn">Save</button></div>
 </dialog>
@@ -115,45 +115,45 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "0.4.4";
-  const BUILD_ID = "2026-09-26a";
-  const SCHEMA_VERSION = 4;
-  const STATE_KEY = "universalRpg.state.v0_4";
-  const LEGACY_STATE_KEYS = ["universalRpg.state.v0_3", "universalRpg.state.v0_2", "universalRpg.state.v0_1"];
+  const APP_VERSION = "0.6.0";
+  const BUILD_ID = "2026-09-26d";
+  const SCHEMA_VERSION = 5;
+  const STATE_KEY = "universalRpg.state.v0_6";
+  const LEGACY_STATE_KEYS = ["universalRpg.state.v0_4", "universalRpg.state.v0_3", "universalRpg.state.v0_2", "universalRpg.state.v0_1"];
   const WORKER_KEY = "universalRpg.workerUrl";
   const TOKEN_KEY = "universalRpg.gameToken";
   const DEFAULT_WORKER = "https://universal-rpg.diabolicdonut.workers.dev";
 
   // Game/referee configuration intentionally lives in index.html. The Cloudflare
   // Worker is a stable security gateway and does not know Universal RPG rules.
-  // Expensive reasoning is reserved for compilation and rare escalations; routine
-  // play uses GPT-6 Sol while probability, RNG, and deterministic mechanics remain local JavaScript.
+  // Campaign compilation/content generation defaults to GPT-6 Sol / High with deterministic
+  // validation and targeted repair; Astra is a compiler escalation path, not the default. Runtime
+  // play uses GPT-6 Sol only where needed while probability, RNG, and deterministic mechanics remain local JavaScript.
   const AI_PROFILES = Object.freeze({
-    campaign_compile:{model:"gpt-6-astra",reasoning_effort:"high",max_output_tokens:12000},
+    // Campaign/content compilation now defaults to GPT-6 Sol / High. Local validators
+    // decide whether a targeted repair is needed; Astra is reserved for failed repair
+    // or unusually difficult source/canon reconciliation rather than every new campaign.
+    campaign_compile:{model:"gpt-6-sol",reasoning_effort:"high",max_output_tokens:12000},
+    campaign_compile_repair:{model:"gpt-6-sol",reasoning_effort:"high",max_output_tokens:12000},
+    campaign_compile_escalation:{model:"gpt-6-astra",reasoning_effort:"high",max_output_tokens:12000},
+    scenario_compile:{model:"gpt-6-sol",reasoning_effort:"high",max_output_tokens:10000},
     adjudicate:{model:"gpt-6-sol",reasoning_effort:"low",max_output_tokens:5000},
     adjudicate_medium:{model:"gpt-6-sol",reasoning_effort:"medium",max_output_tokens:6500},
     adjudicate_complex:{model:"gpt-6-astra",reasoning_effort:"high",max_output_tokens:8000},
-    assessment:{model:"gpt-6-sol",reasoning_effort:"low",max_output_tokens:2500},
+    assessment:{model:"gpt-6-sol",reasoning_effort:"low",max_output_tokens:1200},
+    clarify:{model:"gpt-6-sol",reasoning_effort:"low",max_output_tokens:1200},
+    npc_reply:{model:"gpt-6-sol",reasoning_effort:"low",max_output_tokens:1600},
     director:{model:"gpt-6-sol",reasoning_effort:"low",max_output_tokens:3200},
     hint:{model:"gpt-6-sol",reasoning_effort:"low",max_output_tokens:2200},
     narrate:{model:"gpt-6-sol",reasoning_effort:"low",max_output_tokens:4500},
     narrate_medium:{model:"gpt-6-sol",reasoning_effort:"medium",max_output_tokens:5500},
     plain:{model:"gpt-6-sol",reasoning_effort:"low",max_output_tokens:1000},
-    world_generate:{model:"gpt-6-astra",reasoning_effort:"high",max_output_tokens:12000}
+    world_generate:{model:"gpt-6-sol",reasoning_effort:"high",max_output_tokens:12000},
+    world_generate_complex:{model:"gpt-6-astra",reasoning_effort:"high",max_output_tokens:12000}
   });
-  const AI_SYSTEM_PROMPT = `You are the AI referee, campaign compiler, and narrator for Universal RPG.
+  const AI_SYSTEM_PROMPT = `Universal RPG engine state is authoritative. You are a semantic support layer, not the game engine.
 
-The browser-side Universal RPG engine and supplied campaign/world state are authoritative. Treat established state as canon. Never silently rewrite established facts, inventories, positions, relationships, NPC identities, or campaign rules.
-
-The player controls exactly one protagonist. Every other person or intelligent being is an autonomous NPC with their own knowledge, goals, loyalties, fears, obligations, and agency. NPC cooperation is not player control.
-
-Do not invent a random check merely because an action resembles a traditional RPG skill check. Resolution is probabilistic only when the outcome is genuinely uncertain and the difference between success and failure matters. A consequential intention normally receives a character-informed assessment before commitment. Clarification and assessment do not themselves change world state. When the engine supplies an already-resolved result, accept it exactly and narrate it rather than rerolling or reversing it.
-
-Do not expose hidden mechanics, numeric probabilities, hidden character statistics, private NPC information, or hidden world facts unless the supplied state explicitly authorizes revealing them. Player-facing assessments must use only what the protagonist could reasonably perceive, know, or infer.
-
-Keep narration grounded in the established genre, setting, tone, and known facts. If something is already established, use it. If something is genuinely unresolved, any generated detail must obey the campaign foundation and generation constraints.
-
-The campaign may include a hidden scenario framework and Adventure Director. Scenario anchors describe events, characters, discoveries, or transitions the campaign should preserve or attempt to reach when causally compatible with player agency. In source-guided campaigns, adapt the route, timing, or location of an anchor rather than discarding it merely because the player did not reproduce an exact source sequence. Never force a player choice or predetermined outcome. The world and autonomous NPCs may act without waiting for the player to guess a specific command.`;
+Never silently rewrite established state. The player controls one protagonist; all other intelligent beings are autonomous NPCs. Do not expose hidden facts, private NPC information, hidden scenario anchors, numeric probabilities, or random samples. Local JavaScript owns deterministic rules, probability, RNG, pending-action commitment, state mutation, and scenario-pressure bookkeeping. When given an engine result, accept it exactly. Any new fictional detail must obey the supplied campaign/source constraints. In source-guided play, preserve compatible canonical anchors without forcing player choices.`;
 
   const ITEM_SCHEMA = {
     type:"object",
@@ -227,6 +227,50 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
     },
     required:["mode","objective","anchors","director_rules","director"], additionalProperties:false
   };
+  const RUNTIME_ACTION_SCHEMA = {
+    type:"object",
+    properties:{
+      id:{type:"string"},
+      verb:{type:"string",enum:["move","travel","observe","search","take","drop","use","rest","attack","defend","hide","follow","track","climb","swim","force","repair","heal","persuade","deceive","intimidate","bargain","operate","pilot","use_capability","other"]},
+      capability_tags:{type:"array",items:{type:"string"}},
+      default_difficulty:{type:"string",enum:["none","routine","easy","standard","difficult","formidable","extreme"]},
+      resolution:{type:"string",enum:["deterministic","conditional","uncertain"]},
+      consequence_tags:{type:"array",items:{type:"string"}},
+      notes:{type:"string"}
+    },
+    required:["id","verb","capability_tags","default_difficulty","resolution","consequence_tags","notes"], additionalProperties:false
+  };
+  const ROUTE_SCHEMA = {
+    type:"object",
+    properties:{
+      id:{type:"string"},from_place_id:{type:"string"},to_place_id:{type:"string"},bidirectional:{type:"boolean"},mode:{type:"string"},travel_time_hint:{type:"string"},
+      difficulty:{type:"string",enum:["none","routine","easy","standard","difficult","formidable","extreme"]},
+      capability_tags:{type:"array",items:{type:"string"}},requirements:{type:"array",items:{type:"string"}},hazards:{type:"array",items:{type:"string"}},visibility:{type:"string",enum:["public","hidden"]}
+    },
+    required:["id","from_place_id","to_place_id","bidirectional","mode","travel_time_hint","difficulty","capability_tags","requirements","hazards","visibility"], additionalProperties:false
+  };
+  const HAZARD_SCHEMA = {
+    type:"object",
+    properties:{
+      id:{type:"string"},name:{type:"string"},trigger:{type:"string"},visibility:{type:"string",enum:["public","hidden"]},severity:{type:"string",enum:["minor","serious","severe","critical"]},
+      resistance_tags:{type:"array",items:{type:"string"}},difficulty:{type:"string",enum:["routine","easy","standard","difficult","formidable","extreme"]},consequences:{type:"array",items:{type:"string"}},notes:{type:"string"}
+    },
+    required:["id","name","trigger","visibility","severity","resistance_tags","difficulty","consequences","notes"], additionalProperties:false
+  };
+  const RUNTIME_PACKAGE_SCHEMA = {
+    type:"object",
+    properties:{
+      version:{type:"string"},
+      route_policy:{type:"string",enum:["explicit","permissive"]},
+      action_demands:{type:"array",items:RUNTIME_ACTION_SCHEMA},
+      routes:{type:"array",items:ROUTE_SCHEMA},
+      hazards:{type:"array",items:HAZARD_SCHEMA},
+      rest_profile:{type:"object",properties:{brief_rest_time_hint:{type:"string"},brief_rest_recovery:{type:"string",enum:["none","limited"]},full_rest_requirements:{type:"array",items:{type:"string"}},notes:{type:"string"}},required:["brief_rest_time_hint","brief_rest_recovery","full_rest_requirements","notes"],additionalProperties:false},
+      compiler_notes:{type:"array",items:{type:"string"}}
+    },
+    required:["version","route_policy","action_demands","routes","hazards","rest_profile","compiler_notes"], additionalProperties:false
+  };
+
   const NPC_ACTION_SCHEMA = {
     type:"object", properties:{ npc_id:{type:"string"}, action:{type:"string"}, player_visible:{type:"boolean"}, hidden_reason:{type:"string"} },
     required:["npc_id","action","player_visible","hidden_reason"], additionalProperties:false
@@ -291,9 +335,9 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
           },
           required:["time_label","current_place","known_places","resources","facts"], additionalProperties:false
         },
-        npcs:{type:"array",items:NPC_SCHEMA}, threads:{type:"array",items:THREAD_SCHEMA}, scenario:SCENARIO_SCHEMA, opening_narration:{type:"string"}
+        npcs:{type:"array",items:NPC_SCHEMA}, threads:{type:"array",items:THREAD_SCHEMA}, runtime:RUNTIME_PACKAGE_SCHEMA, scenario:SCENARIO_SCHEMA, opening_narration:{type:"string"}
       },
-      required:["campaign","player","world","npcs","threads","scenario","opening_narration"], additionalProperties:false
+      required:["campaign","player","world","npcs","threads","runtime","scenario","opening_narration"], additionalProperties:false
     },
     scenario_compile:{type:"object",properties:{scenario:SCENARIO_SCHEMA,npc_additions:{type:"array",items:NPC_SCHEMA}},required:["scenario","npc_additions"],additionalProperties:false},
     adjudicate:{
@@ -312,7 +356,7 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
         difficulty:{type:"string",enum:["none","routine","easy","standard","difficult","formidable","extreme"]},
         factors:{type:"array",items:FACTOR_SCHEMA},
         stakes:{type:"object",properties:{success:{type:"string"},failure:{type:"string"}},required:["success","failure"],additionalProperties:false},
-        time_cost_hint:{type:"string"}, narration:{type:"string"}, updates:UPDATES_SCHEMA, npc_actions:{type:"array",items:NPC_ACTION_SCHEMA},
+        time_cost_hint:{type:"string"},
         assessment:{
           type:"object",
           properties:{
@@ -323,8 +367,14 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
           required:["perceived_difficulty","perceived_factors","apparent_success_stakes","apparent_failure_stakes","uncertainty_note","confidence"], additionalProperties:false
         }
       },
-      required:["intent_summary","intent_type","pending_disposition","commitment","complexity","escalation_recommended","escalation_reason","action_kind","action_possible","meaningful_consequence","checkpoint_required","resolution_required","deterministic_outcome","reason","capability_name","capability_level","difficulty","factors","stakes","time_cost_hint","narration","updates","npc_actions","assessment"],
+      required:["intent_summary","intent_type","pending_disposition","commitment","complexity","escalation_recommended","escalation_reason","action_kind","action_possible","meaningful_consequence","checkpoint_required","resolution_required","deterministic_outcome","reason","capability_name","capability_level","difficulty","factors","stakes","time_cost_hint","assessment"],
       additionalProperties:false
+    },
+    clarify:{type:"object",properties:{message:{type:"string"}},required:["message"],additionalProperties:false},
+    npc_reply:{
+      type:"object",
+      properties:{message:{type:"string"},action:{type:"string"},new_intention:{type:"string"},hidden_reason:{type:"string"}},
+      required:["message","action","new_intention","hidden_reason"],additionalProperties:false
     },
     assessment:{type:"object",properties:{message:{type:"string"}},required:["message"],additionalProperties:false},
     hint:{type:"object",properties:{message:{type:"string"}},required:["message"],additionalProperties:false},
@@ -346,13 +396,14 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
   function outputFormatFor(mode){
     const schema=STRUCTURED_SCHEMAS[mode];
     if(!schema) return null;
-    return {type:"json_schema",name:`universal_rpg_${mode}_v044`,strict:true,schema};
+    return {type:"json_schema",name:`universal_rpg_${mode}_v060`,strict:true,schema};
   }
 
   // Probability Builder v1.0 — calibrated semantic resolution model.
   // The AI classifies fictional facts into bounded semantic categories; local JS owns the math and RNG.
   // Baseline anchor: a Competent character attempting a Standard task under neutral conditions succeeds ~70% of the time.
   const PROBABILITY_ENGINE_VERSION = "1.0";
+  const LOCAL_RESOLUTION_ENGINE_VERSION = "1.1";
   const CAPABILITY_INDEX = Object.freeze({ untrained:0, novice:1, familiar:2, competent:3, skilled:4, expert:5, master:6, legendary:7 });
   const DIFFICULTY_INDEX = Object.freeze({ routine:0, easy:1, standard:2, difficult:3, formidable:4, extreme:5 });
   const BASELINE_LOGIT = Math.log(.70/.30);
@@ -420,20 +471,55 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
     return scenario;
   }
 
+  function legacyRuntimePackage(){
+    return {
+      version:"1.0",route_policy:"permissive",
+      action_demands:[
+        {id:"action_move",verb:"move",capability_tags:["travel","movement"],default_difficulty:"none",resolution:"conditional",consequence_tags:["time"],notes:"Known unobstructed local movement is normally deterministic."},
+        {id:"action_travel",verb:"travel",capability_tags:["travel","navigation"],default_difficulty:"standard",resolution:"conditional",consequence_tags:["time","resources","exposure"],notes:"Longer travel depends on route and conditions."},
+        {id:"action_observe",verb:"observe",capability_tags:["perception","observation"],default_difficulty:"easy",resolution:"conditional",consequence_tags:["time","information"],notes:"Plainly visible information is deterministic; concealed or ambiguous information may be uncertain."},
+        {id:"action_search",verb:"search",capability_tags:["perception","investigation","search"],default_difficulty:"standard",resolution:"conditional",consequence_tags:["time","information"],notes:"Searches consume time and may depend on whether a discoverable fact exists."},
+        {id:"action_rest",verb:"rest",capability_tags:["endurance","survival"],default_difficulty:"none",resolution:"deterministic",consequence_tags:["time"],notes:"Brief rest is deterministic but does not automatically grant recovery."}
+      ],
+      routes:[],hazards:[],
+      rest_profile:{brief_rest_time_hint:"A brief pause.",brief_rest_recovery:"none",full_rest_requirements:[],notes:"Legacy save default; campaign-specific rest data was not compiled."},
+      compiler_notes:["Legacy/default runtime package. Route resolution remains permissive until a campaign-specific runtime package is compiled."]
+    };
+  }
+
+  function normalizeRuntimePackage(raw){
+    const base=legacyRuntimePackage();
+    const r=raw&&typeof raw==="object"?raw:{};
+    return {
+      version:String(r.version||base.version),
+      route_policy:["explicit","permissive"].includes(r.route_policy)?r.route_policy:base.route_policy,
+      action_demands:Array.isArray(r.action_demands)?r.action_demands:base.action_demands,
+      routes:Array.isArray(r.routes)?r.routes:[],
+      hazards:Array.isArray(r.hazards)?r.hazards:[],
+      rest_profile:r.rest_profile&&typeof r.rest_profile==="object"?{
+        brief_rest_time_hint:String(r.rest_profile.brief_rest_time_hint||base.rest_profile.brief_rest_time_hint),
+        brief_rest_recovery:["none","limited"].includes(r.rest_profile.brief_rest_recovery)?r.rest_profile.brief_rest_recovery:base.rest_profile.brief_rest_recovery,
+        full_rest_requirements:Array.isArray(r.rest_profile.full_rest_requirements)?r.rest_profile.full_rest_requirements:[],
+        notes:String(r.rest_profile.notes||"")
+      }:base.rest_profile,
+      compiler_notes:Array.isArray(r.compiler_notes)?r.compiler_notes:[]
+    };
+  }
+
   function newBaseState(){
     return {
       schema_version:SCHEMA_VERSION,
       app_version:APP_VERSION,
       created_at:now(), updated_at:now(), turn:0, revision:0,
       pending_action:null, ui_preferences:{hints_enabled:false,hint_style:"gentle"}, creation_request:null,
-      campaign:null, player:null, world:null, npcs:[], threads:[], clocks:[], scenario:null,
+      campaign:null, player:null, world:null, npcs:[], threads:[], clocks:[], runtime:legacyRuntimePackage(), scenario:null,
       transcript:[], event_log:[], debug_log:[]
     };
   }
 
   function migrateState(raw){
     if(!raw || typeof raw !== "object") return newBaseState();
-    if(raw.schema_version === 4){
+    if(raw.schema_version === 5){
       raw.app_version=APP_VERSION;
       raw.revision=Number.isInteger(raw.revision)?raw.revision:0;
       raw.pending_action=raw.pending_action||null;
@@ -442,12 +528,28 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
       raw.ui_preferences.hint_style=["gentle","options","direct"].includes(raw.ui_preferences.hint_style)?raw.ui_preferences.hint_style:"gentle";
       raw.clocks=Array.isArray(raw.clocks)?raw.clocks:[];
       raw.creation_request=raw.creation_request&&typeof raw.creation_request==="object"?raw.creation_request:null;
+      raw.runtime=normalizeRuntimePackage(raw.runtime);
+      raw.scenario=normalizeScenario(raw.scenario,raw);
+      if(raw.campaign && (!Array.isArray(raw.scenario.anchors) || raw.scenario.anchors.length===0)) raw.scenario.director.needs_bootstrap=true;
+      return raw;
+    }
+    if(raw.schema_version === 4){
+      raw.schema_version=5;
+      raw.app_version=APP_VERSION;
+      raw.revision=Number.isInteger(raw.revision)?raw.revision:0;
+      raw.pending_action=raw.pending_action||null;
+      raw.ui_preferences=raw.ui_preferences&&typeof raw.ui_preferences==="object"?raw.ui_preferences:{};
+      raw.ui_preferences.hints_enabled=raw.ui_preferences.hints_enabled===true;
+      raw.ui_preferences.hint_style=["gentle","options","direct"].includes(raw.ui_preferences.hint_style)?raw.ui_preferences.hint_style:"gentle";
+      raw.clocks=Array.isArray(raw.clocks)?raw.clocks:[];
+      raw.creation_request=raw.creation_request&&typeof raw.creation_request==="object"?raw.creation_request:null;
+      raw.runtime=normalizeRuntimePackage(raw.runtime);
       raw.scenario=normalizeScenario(raw.scenario,raw);
       if(raw.campaign && (!Array.isArray(raw.scenario.anchors) || raw.scenario.anchors.length===0)) raw.scenario.director.needs_bootstrap=true;
       return raw;
     }
     if([1,2,3].includes(raw.schema_version)){
-      const migrated={...raw,schema_version:4,app_version:APP_VERSION,revision:Number.isInteger(raw.revision)?raw.revision:0,pending_action:null,ui_preferences:raw.ui_preferences&&typeof raw.ui_preferences==="object"?raw.ui_preferences:{hints_enabled:false,hint_style:"gentle"},creation_request:raw.creation_request||null,clocks:Array.isArray(raw.clocks)?raw.clocks:[]};
+      const migrated={...raw,schema_version:5,app_version:APP_VERSION,revision:Number.isInteger(raw.revision)?raw.revision:0,pending_action:null,ui_preferences:raw.ui_preferences&&typeof raw.ui_preferences==="object"?raw.ui_preferences:{hints_enabled:false,hint_style:"gentle"},creation_request:raw.creation_request||null,clocks:Array.isArray(raw.clocks)?raw.clocks:[]};
       migrated.ui_preferences.hints_enabled=migrated.ui_preferences.hints_enabled===true;
       migrated.ui_preferences.hint_style=["gentle","options","direct"].includes(migrated.ui_preferences.hint_style)?migrated.ui_preferences.hint_style:"gentle";
       if(migrated.player){
@@ -467,6 +569,7 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
         n.hidden.current_intention ||= "Continue current priorities.";
         n.hidden.relationship ||= {trust:"Unspecified",affection:"Unspecified",authority:"None",obligation:"None"};
       }
+      migrated.runtime=normalizeRuntimePackage(migrated.runtime);
       migrated.scenario=legacyScenarioFor(migrated);
       return migrated;
     }
@@ -541,7 +644,7 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
         </div>
         <div class="hint-state ${hintEnabled?"on":""}">${hintEnabled?"Hints are enabled. Requesting one does not advance time or alter world state.":"Hints are disabled. Turn them on whenever you want help."}</div>
       </div>
-      <div class="card"><h3>Session</h3><div class="kv"><span class="label">Turn</span> ${state.turn}</div><details><summary>Developer snapshot</summary><div class="debug">${escapeHtml(JSON.stringify({schema:state.schema_version,probability_engine:PROBABILITY_ENGINE_VERSION,turn:state.turn,place:state.world?.current_place?.id,npcs:(state.npcs||[]).length,threads:(state.threads||[]).length,facts:(state.world?.facts||[]).length,anchors:(state.scenario?.anchors||[]).length,active_anchor:(state.scenario?.anchors||[]).find(a=>["active","eligible"].includes(a.status))?.id||null,director_pressure:state.scenario?.director?.turns_since_development||0,revision:state.revision,pending:state.pending_action?.intent_summary||null,hints:hintPrefs},null,2))}</div></details></div>`;
+      <div class="card"><h3>Session</h3><div class="kv"><span class="label">Turn</span> ${state.turn}</div><details><summary>Developer snapshot</summary><div class="debug">${escapeHtml(JSON.stringify({schema:state.schema_version,local_engine:LOCAL_RESOLUTION_ENGINE_VERSION,probability_engine:PROBABILITY_ENGINE_VERSION,context_policy:"2.2",turn:state.turn,place:state.world?.current_place?.id,npcs:(state.npcs||[]).length,threads:(state.threads||[]).length,facts:(state.world?.facts||[]).length,anchors:(state.scenario?.anchors||[]).length,runtime_routes:(state.runtime?.routes||[]).length,runtime_hazards:(state.runtime?.hazards||[]).length,runtime_actions:(state.runtime?.action_demands||[]).length,active_anchor:(state.scenario?.anchors||[]).find(a=>["active","eligible"].includes(a.status))?.id||null,director_pressure:state.scenario?.director?.turns_since_development||0,revision:state.revision,pending:state.pending_action?.intent_summary||null,hints:hintPrefs},null,2))}</div></details></div>`;
     bindSidebarControls();
   }
 
@@ -614,13 +717,22 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
     };
     const format=outputFormatFor(mode);
     if(format) request.text={format};
+    const schemaChars=format?JSON.stringify(format).length:0;
+    const approximateInputTokens=Math.ceil((AI_SYSTEM_PROMPT.length+String(input||"").length+schemaChars)/4);
+    const budgetKey=profile.name||mode;
+    const tokenBudget=REQUEST_TOKEN_BUDGETS[budgetKey]||REQUEST_TOKEN_BUDGETS[mode]||null;
     const requestMetrics={
       instructions_chars:AI_SYSTEM_PROMPT.length,
       input_chars:String(input||"").length,
-      schema_chars:format?JSON.stringify(format).length:0,
-      approximate_input_tokens:Math.ceil((AI_SYSTEM_PROMPT.length+String(input||"").length+(format?JSON.stringify(format).length:0))/4),
-      context_policy_version:"1.1"
+      schema_chars:schemaChars,
+      approximate_input_tokens:approximateInputTokens,
+      token_budget:tokenBudget,
+      budget_utilization:tokenBudget?Number((approximateInputTokens/tokenBudget).toFixed(3)):null,
+      context_policy_version:"2.2"
     };
+    if(tokenBudget && approximateInputTokens>tokenBudget){
+      throw new Error(`Local request budget exceeded for ${budgetKey}: ~${approximateInputTokens} tokens > ${tokenBudget}. The request was blocked before any API charge.`);
+    }
 
     let r;
     try{
@@ -657,21 +769,43 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
     };
   }
 
-  // Context Optimization v1.1 — the save/database is authoritative memory. AI calls receive only
-  // the slice of state needed for the current job, so prompt size stays approximately bounded as a campaign grows.
+  // Local Resolution Core / Context Policy v2.2.
+  // The save/database is authoritative memory. Runtime prompts are relevance-selected and intentionally tiny.
   const CONTEXT_POLICY = Object.freeze({
-    adjudication_messages:4,
-    outcome_messages:3,
-    hint_messages:6,
-    max_facts:8,
-    max_knowledge:8,
-    max_places:4,
-    max_npcs:4,
-    max_anchors:4,
-    max_threads:6,
-    max_events:6,
-    max_inventory:20,
-    max_text_chars:900
+    adjudication_messages:1,
+    outcome_messages:1,
+    hint_messages:4,
+    max_facts:4,
+    max_knowledge:4,
+    max_places:3,
+    max_npcs:2,
+    max_anchors:3,
+    max_threads:3,
+    max_events:4,
+    max_inventory:8,
+    max_text_chars:600
+  });
+
+  // Approximate total request budgets include system instructions + task prompt + JSON schema.
+  // Compilation/world-generation are deliberately larger one-time jobs; ordinary play is hard-capped.
+  const REQUEST_TOKEN_BUDGETS = Object.freeze({
+    adjudicate:6500,
+    adjudicate_medium:8000,
+    adjudicate_complex:10500,
+    clarify:2200,
+    npc_reply:2600,
+    assessment:1800,
+    hint:2800,
+    narrate:5200,
+    narrate_medium:6500,
+    director:5000,
+    plain:1800,
+    campaign_compile:18000,
+    campaign_compile_repair:26000,
+    campaign_compile_escalation:26000,
+    scenario_compile:18000,
+    world_generate:18000,
+    world_generate_complex:22000
   });
 
   function compactText(value,max=CONTEXT_POLICY.max_text_chars){
@@ -811,16 +945,78 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
     return (state.world?.resources||[]).filter(r=>hidden||r.visibility!=="hidden").slice(0,16);
   }
 
-  function adjudicationContext(playerText){
+  function campaignKernel(){
+    const c=state.campaign||{};
     return {
-      campaign:runtimeCampaign(),
-      scene:{time_label:state.world?.time_label||"",current_place:compactPlace(state.world?.current_place,{hidden:true}),known_places:compactKnownPlaces(playerText),resources:compactResources({hidden:true})},
-      player:compactPlayer(playerText,{includeHidden:true,minimal:true}),
-      relevant_facts:compactFacts(playerText,{hidden:true}),
-      relevant_npcs:compactNpcs(playerText,{hidden:true}),
-      threads:compactThreads(),
-      scenario:compactScenario(playerText,{publicOnly:false,max:3}),
-      recent_dialogue:recentTranscript(CONTEXT_POLICY.adjudication_messages,["player","narrator"]),
+      title:c.title||"",
+      source_mode:c.source_mode||"",
+      tone:compactText(c.tone,180),
+      era_technology:compactText(c.era_technology,160),
+      core_rules:(c.foundation||[]).slice(0,2).map(x=>compactText(x,220)),
+      prohibited:(c.generation_constraints?.prohibited||[]).slice(0,2).map(x=>compactText(x,220))
+    };
+  }
+
+  function compactCapability(c){
+    return c?{name:c.name||"",level:c.level||"untrained",tags:(c.tags||[]).slice(0,4)}:null;
+  }
+
+  function relevantCapabilities(query,max=3){
+    const caps=[...(state.player?.public_capabilities||[]),...(state.player?.hidden_capabilities||[])];
+    return selectRelevant(caps,query,max,c=>`${c.name} ${(c.tags||[]).join(" ")} ${c.description||""}`).map(compactCapability);
+  }
+
+  function compactNpcShallow(n,{hidden=false}={}){
+    if(!n) return null;
+    const out={id:n.id,name:n.name,status:n.status,role:compactText(n.public?.role,160),relationship:compactText(n.public?.relationship,180),known_traits:(n.public?.known_traits||[]).slice(0,4)};
+    if(hidden){
+      out.goals=(n.hidden?.goals||[]).slice(0,2).map(x=>compactText(x,180));
+      out.current_intention=compactText(n.hidden?.current_intention,220);
+      out.temperament=compactText(n.hidden?.temperament,180);
+      out.knowledge=(n.hidden?.knowledge||[]).slice(0,2).map(x=>compactText(x,180));
+    }
+    return out;
+  }
+
+  function routineScenarioSlice(query,max=2){
+    const anchors=(state.scenario?.anchors||[]).filter(a=>["active","eligible"].includes(a.status));
+    const selected=selectRelevant(anchors,query,max,a=>`${a.label} ${(a.trigger_conditions||[]).join(" ")} ${(a.adaptation_guidance||[]).join(" ")}`);
+    return selected.map(a=>({id:a.id,label:compactText(a.label,180),status:a.status,importance:a.importance,trigger_conditions:(a.trigger_conditions||[]).slice(0,2).map(x=>compactText(x,180)),blocking_conditions:(a.blocking_conditions||[]).slice(0,1).map(x=>compactText(x,180))}));
+  }
+
+  function routineNpcs(query,max=2){
+    const present=(state.npcs||[]).filter(n=>n.status==="present");
+    const selected=selectRelevant(present,query,max,n=>`${n.name} ${n.public?.role||""} ${n.hidden?.current_intention||""}`);
+    return selected.map(n=>compactNpcShallow(n,{hidden:true}));
+  }
+
+  function recentNarratorLine(){
+    const m=(state.transcript||[]).filter(x=>x.role==="narrator").slice(-1)[0];
+    return m?compactText(m.text,420):"";
+  }
+
+  function adjudicationContext(playerText,reviewTier="routine"){
+    if(reviewTier!=="routine"){
+      return {
+        campaign:runtimeCampaign(),
+        scene:{time_label:state.world?.time_label||"",current_place:compactPlace(state.world?.current_place,{hidden:true}),resources:compactResources({hidden:true})},
+        player:compactPlayer(playerText,{includeHidden:true,minimal:true}),
+        relevant_facts:compactFacts(playerText,{hidden:true,max:6}),
+        relevant_npcs:compactNpcs(playerText,{hidden:true,max:reviewTier==="astra"?5:3}),
+        threads:compactThreads({max:5}),
+        scenario:compactScenario(playerText,{publicOnly:false,max:reviewTier==="astra"?5:3}),
+        recent_dialogue:recentTranscript(2,["player","narrator"]),turn:state.turn,revision:state.revision
+      };
+    }
+    return {
+      campaign:campaignKernel(),
+      scene:{time_label:compactText(state.world?.time_label,160),current_place:compactPlace(state.world?.current_place,{hidden:true})},
+      player:{id:state.player?.id||"",name:state.player?.name||"",condition:compactText(state.player?.condition,260),capabilities:relevantCapabilities(playerText,3),inventory:selectRelevant(state.player?.inventory||[],playerText,5,i=>`${i.name} ${i.description}`).map(i=>({id:i.id,name:i.name})),knowledge:selectRelevant(state.player?.knowledge||[],playerText,4,k=>k.text).map(k=>({id:k.id,text:compactText(k.text,180),confidence:k.confidence}))},
+      facts:compactFacts(playerText,{hidden:true,max:4}),
+      npcs:routineNpcs(playerText,2),
+      open_threads:compactThreads({max:3}).filter(t=>t.status==="open"),
+      active_anchors:routineScenarioSlice(playerText,2),
+      previous_narration:recentNarratorLine(),
       turn:state.turn,revision:state.revision
     };
   }
@@ -828,29 +1024,28 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
   function outcomeContext(playerText,adjudication){
     const query=`${playerText} ${adjudication?.intent_summary||""}`;
     return {
-      campaign:{title:state.campaign?.title||"",tone:compactText(state.campaign?.tone,300),source_mode:state.campaign?.source_mode||"",source_policy:state.campaign?.source_policy||null},
-      scene:{time_label:state.world?.time_label||"",current_place:compactPlace(state.world?.current_place,{hidden:true}),resources:compactResources({hidden:true})},
-      player:compactPlayer(query,{includeHidden:true,minimal:true}),
-      relevant_facts:compactFacts(query,{hidden:true,max:8}),
-      relevant_npcs:compactNpcs(query,{hidden:true,max:4}),
-      threads:compactThreads({max:6}),
-      scenario:compactScenario(query,{publicOnly:false,max:4}),
-      recent_dialogue:recentTranscript(CONTEXT_POLICY.outcome_messages,["player","narrator"]),
-      turn:state.turn,revision:state.revision
+      campaign:campaignKernel(),
+      scene:{time_label:compactText(state.world?.time_label,160),current_place:compactPlace(state.world?.current_place,{hidden:true})},
+      player:{name:state.player?.name||"",condition:compactText(state.player?.condition,260),capabilities:relevantCapabilities(query,3),inventory:selectRelevant(state.player?.inventory||[],query,5,i=>`${i.name} ${i.description}`).map(i=>({id:i.id,name:i.name}))},
+      facts:compactFacts(query,{hidden:true,max:4}),
+      npcs:(adjudication?.complexity==="routine"?routineNpcs(query,2):compactNpcs(query,{hidden:true,max:3})),
+      open_threads:compactThreads({max:3}).filter(t=>t.status==="open"),
+      active_anchors:routineScenarioSlice(query,2),
+      previous_narration:recentNarratorLine(),turn:state.turn,revision:state.revision
     };
   }
 
   function directorContext(trigger){
     const query=`${trigger?.intent||""} ${trigger?.consequence_summary||""}`;
     return {
-      campaign:compactCampaign(),
-      scene:{time_label:state.world?.time_label||"",current_place:compactPlace(state.world?.current_place,{hidden:true}),resources:compactResources({hidden:true})},
-      player:{id:state.player?.id||"",name:state.player?.name||"",condition:compactText(state.player?.condition,500)},
-      facts:compactFacts(query,{hidden:true,max:8}),
-      npcs:compactNpcs(query,{hidden:true,max:6}),
-      threads:compactThreads({max:8}),
-      scenario:compactScenario(query,{publicOnly:false,max:6}),
-      recent_events:(state.event_log||[]).slice(-CONTEXT_POLICY.max_events).map(compactEvent),
+      campaign:campaignKernel(),
+      scene:{time_label:compactText(state.world?.time_label,180),current_place:compactPlace(state.world?.current_place,{hidden:true})},
+      player:{id:state.player?.id||"",name:state.player?.name||"",condition:compactText(state.player?.condition,300)},
+      facts:compactFacts(query,{hidden:true,max:5}),
+      npcs:compactNpcs(query,{hidden:true,max:4}),
+      open_threads:compactThreads({max:5}).filter(t=>t.status==="open"),
+      scenario:compactScenario(query,{publicOnly:false,max:4}),
+      recent_events:(state.event_log||[]).slice(-3).map(compactEvent),
       trigger,turn:state.turn,revision:state.revision
     };
   }
@@ -894,7 +1089,7 @@ The campaign may include a hidden scenario framework and Adventure Director. Sce
       options:"Offer 2-4 plausible next actions or questions based on known information. Keep them concise and do not rank them as the correct answer.",
       direct:"Give one or two concrete suggestions for getting unstuck, with a brief reason grounded in known information. Do not reveal hidden facts or guarantee success."
     };
-    return `UNIVERSAL RPG — PLAYER HINT v0.4.4
+    return `UNIVERSAL RPG — PLAYER HINT v0.6.0
 
 This is optional out-of-character help. It is NOT an in-world action and must not advance time, resolve uncertainty, trigger NPC actions, mutate state, or establish new canon. Use only the PLAYER-KNOWN CONTEXT below. Never infer or reveal hidden NPC motives, hidden world facts, undiscovered clues, secret identities, future scripted events, numeric mechanics, or objective probabilities. A hint may remind the player of known information and suggest reasonable approaches; it must not identify a single "correct" path unless the known situation genuinely leaves only one. Do not recommend repeating a recently failed or fruitless action unless the circumstances have materially changed. If the player has been circling the same scene, suggest a different category of approach or a broader intention.
 
@@ -926,7 +1121,7 @@ ${JSON.stringify(playerFacingHintContext())}`;
   }
 
   function compilerPrompt(form){
-    return `UNIVERSAL RPG CAMPAIGN COMPILER — v0.4.4
+    return `UNIVERSAL RPG CAMPAIGN COMPILER — v0.6.0
 
 Compile the user's campaign request into a compact playable starting state plus a hidden scenario framework. The output structure is enforced by the API schema; focus on correct content rather than explaining the schema.
 
@@ -947,6 +1142,17 @@ Core rules:
 - Capabilities use only: untrained, novice, familiar, competent, skilled, expert, master, legendary.
 - IDs must be stable lowercase identifiers such as pc_will, npc_arthur, place_beach, fact_shipwreck, anchor_first_contact.
 
+Compiled runtime package rules:
+- Compile a SMALL deterministic runtime package for the opening campaign. This is game data, not prose guidance.
+- route_policy should normally be "explicit" for newly compiled campaigns: a local engine may only assume direct travel between known places when a route record establishes it. Unknown/uncompiled movement falls back to referee/world logic rather than teleporting.
+- action_demands define the campaign's common verbs and their intrinsic default demands. Include at least move, travel, observe, search, and rest, plus genre-relevant verbs such as climb, track, attack, operate, pilot, persuade, repair, heal, or use_capability when appropriate.
+- default_difficulty describes intrinsic task demand only. Use "none" for actions that are ordinarily deterministic when their stated preconditions are satisfied.
+- resolution describes whether the verb is normally deterministic, conditional on the target/context, or genuinely uncertain.
+- routes may reference ONLY place ids already present in world.known_places/current_place. Compile direct opening connections that are already true even if the protagonist has not explored every detail; visibility controls whether the player knows the route.
+- hazards are reusable typed threats referenced by route ids. Do not invent hazards merely to create drama. Hazard difficulty is intrinsic resistance demand; consequences describe what can occur if triggered.
+- rest_profile defines what a brief rest means in this campaign. Do not grant healing or recovery unless the campaign rules justify it.
+- Keep this runtime package compact. It should make common play deterministic, not become an encyclopedia.
+
 Scenario framework rules:
 - Build a hidden scenario framework with roughly 3-8 anchors for a normal campaign opening. Anchors are events, encounters, discoveries, transitions, or important developments—not predetermined player choices or outcomes.
 - In Canonical or Adaptive mode, use source-compatible anchors so the campaign has forward structure. In Canonical mode, major near-term source encounters should normally be major canonical anchors.
@@ -964,9 +1170,109 @@ USER REQUEST:
 ${JSON.stringify(form)}`;
   }
 
+  function campaignCompileIssues(rawCandidate,form){
+    const issues=[];
+    let compiled;
+    const requestedMode=String(form?.source_mode||"Original");
+    const modelMode=String(rawCandidate?.campaign?.source_mode||"");
+    if(modelMode && modelMode!==requestedMode) issues.push(`campaign.source_mode was ${modelMode}; it must exactly match ${requestedMode}.`);
+    try{
+      compiled=validateCompiledCampaign(deepClone(rawCandidate),form);
+    }catch(e){
+      return {compiled:null,issues:[`Structural/runtime validation failed: ${e.message}`]};
+    }
+
+    const anchors=compiled.scenario?.anchors||[];
+    if(anchors.length<3) issues.push(`Scenario has ${anchors.length} anchors; opening campaigns should normally compile 3-8.`);
+    if(anchors.length>8) issues.push(`Scenario has ${anchors.length} anchors; keep the opening framework to 3-8.`);
+    if(!anchors.some(a=>["active","eligible"].includes(a.status))) issues.push("No scenario anchor is active or eligible at campaign start.");
+    if(compiled.scenario?.director?.needs_bootstrap===true) issues.push("New campaign scenario director still requests bootstrap.");
+    if(!compiled.world?.current_place?.id) issues.push("Current place has no stable id.");
+    if(!(compiled.world?.known_places||[]).some(p=>p.id===compiled.world?.current_place?.id)) issues.push("Current place is missing from known_places after normalization.");
+    if(!(compiled.threads||[]).length) issues.push("Campaign compiled no opening thread; at least one actionable/open situation is required.");
+
+    compiled.runtime=normalizeRuntimePackage(compiled.runtime);
+    const runtime=compiled.runtime;
+    if(runtime.route_policy!=="explicit") issues.push("Newly compiled runtime package must use route_policy='explicit' so the engine does not assume geography that was never compiled.");
+    if((runtime.action_demands||[]).length<5) issues.push(`Runtime package has only ${(runtime.action_demands||[]).length} action demands; compile at least the common opening verbs.`);
+    const verbs=new Set((runtime.action_demands||[]).map(a=>a.verb));
+    for(const requiredVerb of ["move","travel","observe","search","rest"]) if(!verbs.has(requiredVerb)) issues.push(`Runtime package is missing required common verb '${requiredVerb}'.`);
+    try{ validateUniqueIds(runtime.action_demands||[],"Runtime actions"); validateUniqueIds(runtime.routes||[],"Routes"); validateUniqueIds(runtime.hazards||[],"Hazards"); }catch(e){ issues.push(e.message); }
+    const placeIds=new Set((compiled.world?.known_places||[]).map(p=>p.id));
+    const hazardIds=new Set((runtime.hazards||[]).map(h=>h.id));
+    for(const route of runtime.routes||[]){
+      if(!placeIds.has(route.from_place_id)) issues.push(`Route ${route.id} references unknown from_place_id ${route.from_place_id}.`);
+      if(!placeIds.has(route.to_place_id)) issues.push(`Route ${route.id} references unknown to_place_id ${route.to_place_id}.`);
+      for(const hid of route.hazards||[]) if(!hazardIds.has(hid)) issues.push(`Route ${route.id} references unknown hazard ${hid}.`);
+    }
+
+    const sourceGuided=["Canonical","Adaptive"].includes(requestedMode);
+    if(sourceGuided){
+      const substantive=anchors.filter(a=>["major","supporting"].includes(a.importance));
+      if(!substantive.length) issues.push(`${requestedMode} campaign has no major/supporting source-guided anchor.`);
+      if(requestedMode==="Canonical" && !anchors.some(a=>a.source_role==="canonical" && ["major","supporting"].includes(a.importance))) issues.push("Canonical campaign has no major/supporting canonical anchor.");
+    }
+
+    const idPattern=/^[a-z][a-z0-9_]*$/;
+    const idRows=[
+      ["player",compiled.player?.id],
+      ["current place",compiled.world?.current_place?.id],
+      ...((compiled.world?.known_places||[]).map(x=>["place",x.id])),
+      ...((compiled.npcs||[]).map(x=>["npc",x.id])),
+      ...((compiled.threads||[]).map(x=>["thread",x.id])),
+      ...anchors.map(x=>["anchor",x.id])
+    ];
+    for(const [kind,id] of idRows){ if(id && !idPattern.test(String(id))) issues.push(`${kind} id '${id}' is not a stable lowercase identifier.`); }
+
+    return {compiled,issues:[...new Set(issues)]};
+  }
+
+  function campaignRepairPrompt(form,candidate,issues,{astra=false}={}){
+    return `UNIVERSAL RPG CAMPAIGN COMPILER — TARGETED REPAIR v0.6.0
+
+Repair the supplied compiled campaign. Return the COMPLETE campaign package in the normal campaign_compile schema, not a patch.
+
+The browser has already run deterministic validation. Fix every listed issue while preserving correct content and the user's request. Do not gratuitously rewrite unrelated material. The user's selected source_mode is binding. Keep one player persona; NPCs remain autonomous. Preserve hidden information and source-fidelity rules. Ensure the scenario has 3-8 opening anchors with at least one active/eligible anchor and a viable path forward. Also repair the compiled runtime package: stable action ids, valid route endpoints, valid hazard references, and a useful opening action catalog.
+
+${astra?"This is the escalation pass because a GPT-6 Sol repair still failed deterministic validation. Reconcile the remaining issues carefully; do not broaden or embellish beyond what the request/source supports.":"This is the normal GPT-6 Sol repair pass. Make the smallest coherent corrections required by validation."}
+
+USER REQUEST:
+${JSON.stringify(form)}
+
+VALIDATION ISSUES:
+${JSON.stringify(issues)}
+
+CANDIDATE PACKAGE:
+${JSON.stringify(candidate)}`;
+  }
+
+  async function compileCampaignPackage(form){
+    const trace=[];
+    const run=async (prompt,profile,phase)=>{
+      setStatus("",phase==="campaign_compile_primary"?"Compiling campaign with GPT-6 Sol...":phase==="campaign_compile_repair"?"Repairing campaign package...":"Escalating compiler repair to GPT-6 Astra...");
+      const api=await callWorker(prompt,"campaign_compile",profile);
+      trace.push({phase,api});
+      return api;
+    };
+
+    const primary=await run(compilerPrompt(form),"campaign_compile","campaign_compile_primary");
+    const primaryModelSourceMode=primary.data?.campaign?.source_mode||null;
+    let check=campaignCompileIssues(primary.data,form);
+    if(!check.issues.length) return {compiled:check.compiled,trace,model_source_mode:primaryModelSourceMode,escalated:false};
+
+    const repair=await run(campaignRepairPrompt(form,primary.data,check.issues),"campaign_compile_repair","campaign_compile_repair");
+    check=campaignCompileIssues(repair.data,form);
+    if(!check.issues.length) return {compiled:check.compiled,trace,model_source_mode:primaryModelSourceMode,escalated:false};
+
+    const escalation=await run(campaignRepairPrompt(form,repair.data,check.issues,{astra:true}),"campaign_compile_escalation","campaign_compile_escalation");
+    check=campaignCompileIssues(escalation.data,form);
+    if(check.issues.length) throw new Error("Campaign package failed deterministic validation after Astra escalation: "+check.issues.join(" | "));
+    return {compiled:check.compiled,trace,model_source_mode:primaryModelSourceMode,escalated:true};
+  }
+
   function adjudicationPrompt(playerText,reviewTier="routine"){
     const pending=state.pending_action?JSON.stringify({intent_summary:state.pending_action.intent_summary,original_text:state.pending_action.original_text,assessment_message:state.pending_action.assessment_message},null,2):"NONE";
-    return `UNIVERSAL RPG — INTENT & ADJUDICATION PHASE v0.4.4
+    return `UNIVERSAL RPG — INTENT & ADJUDICATION PHASE v0.6.0
 
 Classify the player's message before resolving anything. The player may be asking for clarification, asking for a risk assessment, proposing/committing to an action, examining something in-world, communicating, or speaking meta-game.
 
@@ -1020,14 +1326,14 @@ Probability Builder rules:
 - Do not resolve the random outcome yourself. Local JavaScript owns probability and RNG.
 
 Output discipline:
-- CLARIFY/ASSESS/META and pending keep/cancel/confirm responses must have empty state updates and no NPC actions.
-- For a checkpoint, do not apply state updates and leave narration empty; the engine will generate the assessment message separately.
-- For a non-checkpoint deterministic in-world action, provide narration and only causally necessary updates.
-- Keep world facts and thread statuses current. If the action itself clearly resolves an existing thread or makes an existing fact obsolete, use fact changes/removals or thread status changes rather than leaving stale state behind.
-- Never expose numeric mechanics or hidden facts in narration.
+- This phase CLASSIFIES AND ADJUDICATES ONLY. Do not narrate the result and do not mutate world state.
+- The local engine will handle commitment, probability/RNG, deterministic resolution, and state mutation. A separate narrow narration/world-update phase runs only when necessary.
+- For CLARIFY/META, classify correctly; the engine will answer through a small clarification path.
+- For pending keep/cancel/confirm, classify disposition only.
+- Never expose hidden facts in the assessment object.
 
 AUTHORITATIVE STATE:
-${JSON.stringify(adjudicationContext(playerText))}
+${JSON.stringify(adjudicationContext(playerText,reviewTier))}
 
 PENDING ACTION:
 ${pending}
@@ -1036,8 +1342,56 @@ PLAYER MESSAGE:
 ${playerText}`;
   }
 
+  function clarifyContext(playerText){
+    return {
+      campaign:campaignKernel(),
+      scene:{time_label:compactText(state.world?.time_label,150),current_place:compactPlace(state.world?.current_place)},
+      player:{name:state.player?.name||"",condition:compactText(state.player?.condition,240),inventory:selectRelevant(state.player?.inventory||[],playerText,5,i=>`${i.name} ${i.description}`).map(i=>({name:i.name,description:compactText(i.description,140)})),knowledge:selectRelevant(state.player?.knowledge||[],playerText,4,k=>k.text).map(k=>compactText(k.text,180))},
+      public_facts:compactFacts(playerText,{hidden:false,max:4}).map(f=>f.text),
+      present_npcs:(state.npcs||[]).filter(n=>n.status==="present").slice(0,3).map(n=>compactNpcShallow(n,{hidden:false})),
+      previous_narration:recentNarratorLine()
+    };
+  }
+
+  function clarificationPrompt(playerText){
+    return `UNIVERSAL RPG — NARROW CLARIFICATION v0.6.0
+
+Answer the player's out-of-action question from the supplied PLAYER-KNOWN state only. Do not advance time, mutate state, trigger NPC actions, invent undiscovered facts, or reveal hidden information. If the state does not support an answer, say what is not yet known and identify what kind of in-world action could establish it. Be concise.
+
+PLAYER-KNOWN STATE:
+${JSON.stringify(clarifyContext(playerText))}
+
+QUESTION:
+${playerText}`;
+  }
+
+  function npcReplyContext(npc,playerText){
+    return {
+      campaign:campaignKernel(),
+      scene:{time_label:compactText(state.world?.time_label,150),current_place:compactPlace(state.world?.current_place)},
+      player:{name:state.player?.name||"",condition:compactText(state.player?.condition,220)},
+      npc:compactNpcShallow(npc,{hidden:true}),
+      npc_relationship:npc?.hidden?.relationship||null,
+      relevant_npc_knowledge:selectRelevant(npc?.hidden?.knowledge||[],playerText,3,x=>x).map(x=>compactText(x,180)),
+      relevant_public_facts:compactFacts(playerText,{hidden:false,max:3}).map(f=>f.text),
+      previous_narration:recentNarratorLine()
+    };
+  }
+
+  function npcReplyPrompt(npc,playerText){
+    return `UNIVERSAL RPG — ROUTINE NPC COGNITION v0.6.0
+
+The engine has already determined this is an ordinary conversation with ${npc.name}, not a persuasion/deception/threat check. Respond as the autonomous NPC using only what that NPC reasonably knows or believes. Do not alter external world facts, reveal hidden scenario anchors, or decide a contested social outcome. You may refine only the NPC's current intention when the conversation naturally changes it. Keep the spoken response concise and in character.
+
+CONTEXT:
+${JSON.stringify(npcReplyContext(npc,playerText))}
+
+PLAYER SAYS/ASKS:
+${playerText}`;
+  }
+
   function assessmentPrompt(playerText,adj,preview,requiresConfirmation){
-    return `UNIVERSAL RPG — PLAYER-FACING ASSESSMENT v0.4.4
+    return `UNIVERSAL RPG — PLAYER-FACING ASSESSMENT v0.6.0
 
 Give the player a concise, natural referee assessment before any action is resolved. Use only the CHARACTER-KNOWN assessment data below. Do not reveal numeric probabilities, hidden factors, hidden statistics, objective difficulty, or hidden scenario anchors. Explain the important visible reasons in ordinary language.
 
@@ -1063,7 +1417,7 @@ requires_confirmation: ${requiresConfirmation}`;
   }
 
   function outcomePrompt(playerText,adjudication,resolution){
-    return `UNIVERSAL RPG — OUTCOME & NARRATION PHASE v0.4.4
+    return `UNIVERSAL RPG — OUTCOME & NARRATION PHASE v0.6.0
 
 The resolution engine has already fixed the action outcome. It may be deterministic or probabilistic. Accept the supplied result exactly. Do not reroll it, reverse it, or alter its stated magnitude. Probabilistic magnitude may be marginal_success, solid_success, strong_success, exceptional_success, marginal_failure, failure, severe_failure, or exceptional_failure. Treat magnitude as degree/quality of the resolved result, not permission to invent unrelated consequences.
 
@@ -1085,7 +1439,7 @@ ${JSON.stringify(resolution)}`;
   }
 
   function scenarioRepairPrompt(){
-    return `UNIVERSAL RPG — SCENARIO FRAMEWORK BOOTSTRAP v0.4.4
+    return `UNIVERSAL RPG — SCENARIO FRAMEWORK BOOTSTRAP v0.6.0
 
 Build a scenario framework for an existing migrated campaign that predates scenario anchors. Do NOT rewrite established campaign/world state. Do NOT retroactively assert that undiscovered events already happened. Use the campaign's existing source_mode as binding unless a preserved creation_request explicitly records a different selected source_mode.
 
@@ -1111,7 +1465,7 @@ ${JSON.stringify(scenarioBootstrapContext())}`;
   }
 
   function directorPrompt(trigger){
-    return `UNIVERSAL RPG — ADVENTURE DIRECTOR v0.4.4
+    return `UNIVERSAL RPG — ADVENTURE DIRECTOR v0.6.0
 
 You are not resolving the player's just-completed action; that result is already committed. Decide whether the world should now advance on the SAME turn through an eligible scenario anchor, autonomous NPC initiative, scene transition, thread reconciliation, or a causally justified remote development.
 
@@ -1317,6 +1671,7 @@ ${JSON.stringify(directorContext(trigger))}`;
     validateUniqueIds(c.npcs,"NPCs"); validateUniqueIds(c.threads,"Threads"); validateUniqueIds(c.world.known_places||[],"Known places");
     if(c.world.current_place?.id && (c.world.known_places||[]).some(p=>p.id===c.world.current_place.id)===false){ c.world.known_places.push(deepClone(c.world.current_place)); }
 
+    c.runtime=normalizeRuntimePackage(c.runtime);
     c.scenario=c.scenario&&typeof c.scenario==="object"?c.scenario:legacyScenarioFor({campaign:c.campaign,world:c.world,turn:0});
     if(form?.source_mode){
       // User-selected source mode is authoritative; the model may not silently relabel it.
@@ -1332,7 +1687,7 @@ ${JSON.stringify(directorContext(trigger))}`;
 
   function validateStateEnvelope(s){
     if(!s||typeof s!=="object") throw new Error("Save is not an object.");
-    if(![1,2,3,4].includes(s.schema_version)) throw new Error("Unsupported Universal RPG save schema.");
+    if(![1,2,3,4,5].includes(s.schema_version)) throw new Error("Unsupported Universal RPG save schema.");
     if(s.campaign && (!s.player||!s.world)) throw new Error("Active campaign save is missing player or world state.");
     return true;
   }
@@ -1404,20 +1759,27 @@ ${JSON.stringify(directorContext(trigger))}`;
     if(!form.genre||!form.premise||!form.player_concept){ alert("Please provide at least genre/setting, premise, and player character concept."); return; }
     setBusy(true,"Compiling campaign...");
     try{
-      const api=await callWorker(compilerPrompt(form),"campaign_compile");
-      const modelSourceMode=api.data?.campaign?.source_mode||null;
-      const compiled=validateCompiledCampaign(api.data,form);
+      const packageResult=await compileCampaignPackage(form);
+      const compiled=packageResult.compiled;
       state=newBaseState();
       state.creation_request=deepClone(form);
-      state.campaign=compiled.campaign; state.player=compiled.player; state.world=compiled.world; state.npcs=compiled.npcs; state.threads=compiled.threads; state.scenario=compiled.scenario;
+      state.campaign=compiled.campaign; state.player=compiled.player; state.world=compiled.world; state.npcs=compiled.npcs; state.threads=compiled.threads; state.runtime=normalizeRuntimePackage(compiled.runtime); state.scenario=compiled.scenario;
       addMessage("narrator",compiled.opening_narration);
-      addEvent("campaign_compiled",{campaign:state.campaign.title,npc_count:state.npcs.length,thread_count:state.threads.length,anchor_count:(state.scenario?.anchors||[]).length,requested_source_mode:form.source_mode,model_source_mode:modelSourceMode,locked_source_mode:state.campaign.source_mode,gateway_version:api.gateway_version,build_id:BUILD_ID});
-      addDebug({phase:"campaign_compile",model:api.model,ai_profile:api.ai_profile,request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,request_metrics:api.request_metrics,structured:true,build_id:BUILD_ID});
+      const finalApi=packageResult.trace[packageResult.trace.length-1]?.api;
+      addEvent("campaign_compiled",{campaign:state.campaign.title,npc_count:state.npcs.length,thread_count:state.threads.length,anchor_count:(state.scenario?.anchors||[]).length,requested_source_mode:form.source_mode,model_source_mode:packageResult.model_source_mode,locked_source_mode:state.campaign.source_mode,compiler_passes:packageResult.trace.length,compiler_escalated:packageResult.escalated,compiler_model:finalApi?.model||AI_PROFILES.campaign_compile.model,gateway_version:finalApi?.gateway_version||null,build_id:BUILD_ID});
+      for(const row of packageResult.trace){
+        const api=row.api;
+        addDebug({phase:row.phase,model:api.model,ai_profile:api.ai_profile,request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,request_metrics:api.request_metrics,structured:true,build_id:BUILD_ID});
+      }
       if(scenarioFrameworkMissing()) await ensureScenarioFramework({force:true});
       if(!(state.scenario?.anchors||[]).length) throw new Error("Campaign scenario framework is still empty after repair.");
       persist(); el.campaignDialog.close();
     }catch(e){ alert("Campaign creation failed: "+e.message); setStatus("bad","Campaign creation failed"); }
     finally{setBusy(false);}
+  }
+
+  function emptyUpdates(){
+    return {time_label:null,current_place:null,player_condition:null,inventory_additions:[],player_knowledge_additions:[],world_fact_additions:[],world_fact_changes:[],world_fact_removals:[],known_place_additions:[],npc_additions:[],npc_status_changes:[],npc_relationship_changes:[],npc_intention_changes:[],thread_additions:[],thread_status_changes:[],scenario_anchor_status_changes:[]};
   }
 
   function updatesAreEmpty(u){
@@ -1431,10 +1793,25 @@ ${JSON.stringify(directorContext(trigger))}`;
     if((adj.npc_actions||[]).length) throw new Error(`${adj.intent_type} response attempted to trigger NPC actions.`);
   }
 
+  function localLikelihoodPhrase(band){
+    return ({essentially_certain:"It looks essentially certain to work",very_likely:"It looks very likely to work",good:"Your chances look good",favorable:"The odds look favorable",uncertain:"The outcome is uncertain",not_good:"Your chances do not look good",unlikely:"It looks unlikely to work",very_unlikely:"It looks very unlikely to work",nearly_impossible:"It looks nearly impossible",not_possible:"The action cannot succeed as described",not_applicable:""})[band]||"The outcome is uncertain";
+  }
+
   async function makeAssessmentMessage(playerText,adj,requiresConfirmation){
     const preview=previewProbability(adj);
-    const api=await callWorker(assessmentPrompt(playerText,adj,preview,requiresConfirmation),"assessment");
-    return {message:api.data.message,preview,api};
+    const parts=[];
+    const phrase=localLikelihoodPhrase(preview.display_likelihood_band);
+    if(phrase) parts.push(phrase+".");
+    const visible=(adj.assessment?.perceived_factors||[]).slice(0,3).map(f=>String(f.label||"").trim()).filter(Boolean);
+    if(visible.length) parts.push(visible.join(visible.length>1?" ":" "));
+    if(adj.assessment?.uncertainty_note) parts.push(String(adj.assessment.uncertainty_note).trim());
+    if(adj.assessment?.apparent_failure_stakes) parts.push(String(adj.assessment.apparent_failure_stakes).trim());
+    if(!parts.length && adj.stakes?.failure) parts.push(String(adj.stakes.failure).trim());
+    let message=parts.filter(Boolean).join(" ").replace(/\s+/g," ").trim();
+    if(requiresConfirmation) message+=(message?" ":"")+"Do you still want to proceed?";
+    if(!message) message=requiresConfirmation?"This has meaningful consequences. Do you still want to proceed?":"There is no additional risk information your character can establish from here.";
+    const api={model:"local-js",ai_profile:"assessment_local",openai_request_id:null,response_id:null,usage:null,request_metrics:{approximate_input_tokens:0,token_budget:0,budget_utilization:0,context_policy_version:"2.2"}};
+    return {message,preview,api,local:true};
   }
 
   function scenarioFrameworkMissing(){
@@ -1467,7 +1844,7 @@ ${JSON.stringify(directorContext(trigger))}`;
     if(state.pending_action) return;
 
     setStatus("","Building scenario framework...");
-    const api=await callWorker(scenarioRepairPrompt(),"scenario_compile","world_generate");
+    const api=await callWorker(scenarioRepairPrompt(),"scenario_compile","scenario_compile");
     const repaired=validateScenario(api.data.scenario,state,{requireAnchors:true});
     repaired.mode=scenarioModeForSourceMode(state.campaign.source_mode);
     repaired.director.needs_bootstrap=false;
@@ -1494,19 +1871,22 @@ ${JSON.stringify(directorContext(trigger))}`;
     else d.turns_since_development=(d.turns_since_development||0)+1;
   }
 
+  function lastDirectorCheckTurn(){
+    const rows=(state.debug_log||[]).filter(d=>["director","director_noop","director_error"].includes(d.phase));
+    return rows.length?rows[rows.length-1].turn:-9999;
+  }
+
   function shouldRunAdventureDirector(adj,summary={}){
     if(!state.scenario||state.scenario.director?.needs_bootstrap) return false;
     const d=state.scenario.director||{};
+    if(lastDirectorCheckTurn()===state.turn) return false;
     const activeOrEligible=(state.scenario.anchors||[]).some(a=>["eligible","active"].includes(a.status)&&a.importance!=="optional");
     const sourcePending=state.scenario.mode==="source_guided"&&(state.scenario.anchors||[]).some(a=>a.status==="pending"&&a.importance!=="optional");
-    if(activeOrEligible) return true;
-    // Hard stall breaker: two committed turns without a meaningful change always deserve a Director check.
-    if((d.turns_since_development||0)>=2 || (d.repeat_place_turns||0)>=2) return true;
-    // Source-guided campaigns should not make the player hunt for a magic command. Once pressure begins,
-    // check pending anchors after ordinary exploration, conversation, travel, or rest.
-    if(sourcePending && meaningfulDevelopment(summary)) return true;
-    if(sourcePending && ["travel","move","observe","communicate","rest"].includes(adj?.action_kind) && (d.turns_since_development||0)>=1) return true;
-    if(["travel","move","observe"].includes(adj?.action_kind)&&!meaningfulDevelopment(summary)&&(d.turns_since_development||0)>=1) return true;
+    const stagnation=(d.turns_since_development||0)>=2 || (d.repeat_place_turns||0)>=2;
+    if(stagnation) return true;
+    if(activeOrEligible && meaningfulDevelopment(summary)) return true;
+    if(activeOrEligible && ["travel","move","observe","communicate","rest"].includes(adj?.action_kind) && (d.turns_since_development||0)>=1) return true;
+    if(sourcePending && ["travel","move","observe"].includes(adj?.action_kind) && (d.turns_since_development||0)>=2) return true;
     return false;
   }
 
@@ -1517,6 +1897,7 @@ ${JSON.stringify(directorContext(trigger))}`;
     const trigger={action_kind:adj?.action_kind||"other",intent:adj?.intent_summary||"",primary_updates:primarySummary,consequence_summary:consequenceSummary,turns_since_development:state.scenario?.director?.turns_since_development||0,repeat_place_turns:state.scenario?.director?.repeat_place_turns||0};
     try{
       setStatus("","Advancing world...");
+      addDebug({phase:"director_trigger_local",ai_used:false,trigger});
       const api=await callWorker(directorPrompt(trigger),"director","director");
       const out=api.data;
       if(!out.should_advance){
@@ -1547,24 +1928,52 @@ ${JSON.stringify(directorContext(trigger))}`;
     state.pending_action=null;
     let primarySummary={};
     let consequenceSummary="";
+
+    // Compiled Runtime Package: deterministic/probabilistic route travel can resolve
+    // entirely in JavaScript. AI is not asked to choose difficulty, probability, or outcome.
+    if(adj._local_runtime_action==="route_move"){
+      const route=(state.runtime?.routes||[]).find(r=>r.id===adj.runtime_payload?.route_id);
+      const dest=(state.world?.known_places||[]).find(p=>p.id===adj.runtime_payload?.destination_id);
+      if(!route||!dest) throw new Error("Compiled route resolution references missing runtime data.");
+      let success=true,result=null;
+      if(adj.resolution_required){ result=computeProbability(adj); success=result.success; addEvent("probability_resolution",{intent:adj.intent_summary,action_kind:adj.action_kind,adjudication:adj,result,local_runtime:true}); addDebug({phase:"probability",result,local_runtime:true}); }
+      const u=emptyUpdates();
+      if(success) u.current_place=deepClone(dest);
+      const updateResult=applyUpdates(u); primarySummary=updateResult.summary;
+      const narration=success?`You follow ${route.mode||"the established route"} to ${dest.name}. ${dest.public_description}`:`You set out along ${route.mode||"the established route"}, but you do not reach ${dest.name} as intended.`;
+      addMessage("narrator",narration);
+      addEvent("runtime_route_resolution",{intent:adj.intent_summary,route_id:route.id,destination_id:dest.id,success,magnitude:result?.magnitude||"ordinary",updates:updateResult.summary,time_cost_hint:route.travel_time_hint});
+      addDebug({phase:"local_runtime_resolution",ai_used:false,kind:"route_move",route_id:route.id,success,magnitude:result?.magnitude||"ordinary",updates:updateResult.summary});
+      await runAdventureDirector(adj,primarySummary,narration);
+      return;
+    }
+
+    // Local Resolution Core: if the browser engine has already resolved this action,
+    // commit its authoritative state patch and local narration without an AI round-trip.
+    if(adj._local_resolution===true){
+      const updateResult=applyUpdates(adj.updates||emptyUpdates()); primarySummary=updateResult.summary;
+      addMessage("narrator",adj.narration||"The action resolves.");
+      addEvent("local_resolution",{intent:adj.intent_summary,intent_type:adj.intent_type,action_kind:adj.action_kind,outcome:adj.deterministic_outcome,reason:adj.reason,time_cost_hint:adj.time_cost_hint,updates:updateResult.summary,npc_actions:adj.npc_actions||[]});
+      addDebug({phase:"local_resolution",ai_used:false,action_kind:adj.action_kind,intent:adj.intent_summary,updates:updateResult.summary});
+      await runAdventureDirector(adj,primarySummary,"");
+      return;
+    }
+
     if(!adj.resolution_required){
-      if(adj.checkpoint_required){
-        setStatus("","Resolving consequence...");
-        const fixed={deterministic:true,success:adj.deterministic_outcome==="success",magnitude:"ordinary",outcome:adj.deterministic_outcome,stakes:adj.stakes};
-        const oApi=await callWorker(outcomePrompt(playerText,adj,fixed),"narrate",narrationProfileFor(adj));
-        const out=oApi.data;
-        const updateResult=applyUpdates(out.updates); primarySummary=updateResult.summary; consequenceSummary=out.consequence_summary||"";
-        addMessage("narrator",out.narration||"The action resolves.");
-        addEvent("deterministic_resolution",{intent:adj.intent_summary,intent_type:adj.intent_type,action_kind:adj.action_kind,outcome:adj.deterministic_outcome,reason:adj.reason,time_cost_hint:adj.time_cost_hint,updates:updateResult.summary,npc_actions:out.npc_actions,consequence_summary:out.consequence_summary});
-        addDebug({phase:"deterministic_narration",model:oApi.model,ai_profile:oApi.ai_profile,request_id:oApi.openai_request_id,response_id:oApi.response_id,usage:oApi.usage,request_metrics:oApi.request_metrics});
-      }else{
-        const updateResult=applyUpdates(adj.updates); primarySummary=updateResult.summary;
-        addMessage("narrator",adj.narration||"The action resolves.");
-        addEvent("deterministic_resolution",{intent:adj.intent_summary,intent_type:adj.intent_type,action_kind:adj.action_kind,outcome:adj.deterministic_outcome,reason:adj.reason,time_cost_hint:adj.time_cost_hint,updates:updateResult.summary,npc_actions:adj.npc_actions});
-      }
+      // AI adjudication now classifies only. Once committed, a narrow outcome phase
+      // handles prose and any genuinely needed world patch.
+      setStatus("","Resolving consequence...");
+      const fixed={deterministic:true,success:adj.deterministic_outcome!=="failure",magnitude:"ordinary",outcome:adj.deterministic_outcome,stakes:adj.stakes};
+      const oApi=await callWorker(outcomePrompt(playerText,adj,fixed),"narrate",narrationProfileFor(adj));
+      const out=oApi.data;
+      const updateResult=applyUpdates(out.updates); primarySummary=updateResult.summary; consequenceSummary=out.consequence_summary||"";
+      addMessage("narrator",out.narration||"The action resolves.");
+      addEvent("deterministic_resolution",{intent:adj.intent_summary,intent_type:adj.intent_type,action_kind:adj.action_kind,outcome:adj.deterministic_outcome,reason:adj.reason,time_cost_hint:adj.time_cost_hint,updates:updateResult.summary,npc_actions:out.npc_actions,consequence_summary:out.consequence_summary});
+      addDebug({phase:"deterministic_narration",model:oApi.model,ai_profile:oApi.ai_profile,request_id:oApi.openai_request_id,response_id:oApi.response_id,usage:oApi.usage,request_metrics:oApi.request_metrics});
       await runAdventureDirector(adj,primarySummary,consequenceSummary);
       return;
     }
+
     if(adj.capability_level==="none"||adj.difficulty==="none") throw new Error("Referee requested probability resolution without a capability or difficulty.");
     const result=computeProbability(adj);
     addEvent("probability_resolution",{intent:adj.intent_summary,action_kind:adj.action_kind,adjudication:adj,result});
@@ -1607,6 +2016,213 @@ ${JSON.stringify(directorContext(trigger))}`;
     return null;
   }
 
+  function localAdj({intent_summary,action_kind="other",narration="",updates=null,npc_actions=[],reason="Resolved by the local engine.",time_cost_hint="A brief moment."}={}){
+    return {
+      _local_resolution:true,intent_summary,intent_type:"act",pending_disposition:"none",commitment:"committed",complexity:"routine",escalation_recommended:false,escalation_reason:"Local engine resolution.",
+      action_kind,action_possible:true,meaningful_consequence:false,checkpoint_required:false,resolution_required:false,deterministic_outcome:"success",reason,
+      capability_name:"",capability_level:"none",difficulty:"none",factors:[],stakes:{success:"",failure:""},time_cost_hint,
+      narration,updates:updates||emptyUpdates(),npc_actions,
+      assessment:{perceived_difficulty:"none",perceived_factors:[],apparent_success_stakes:"",apparent_failure_stakes:"",uncertainty_note:"",confidence:"high"}
+    };
+  }
+
+  function commandText(text){ return String(text||"").toLowerCase().replace(/[’]/g,"'").replace(/[^a-z0-9' ]+/g," ").replace(/\s+/g," ").trim(); }
+
+  function localInformationResponse(text){
+    const t=commandText(text);
+    const p=state.player||{}; const place=state.world?.current_place;
+    if(/^(inventory|show inventory|what do i have|what am i carrying|what am i holding)$/.test(t)){
+      const items=(p.inventory||[]).map(i=>i.name).filter(Boolean);
+      return items.length?`You are carrying: ${items.join(", ")}.`:"You are not carrying any established equipment.";
+    }
+    if(/^(where am i|where are we|what is this place)$/.test(t)){
+      return place?`${place.name}: ${place.public_description}`:"Your exact location has not been established.";
+    }
+    if(/^(how do i feel|how am i feeling|am i hurt|what is my condition|status)$/.test(t)){
+      return p.condition?`You are ${p.condition.charAt(0).toLowerCase()+p.condition.slice(1)}`:"No specific condition is currently recorded.";
+    }
+    if(/^(look around|look around me|survey the surroundings|survey my surroundings|what can i see|describe my surroundings)$/.test(t)){
+      if(!place) return "Your immediate surroundings have not been established.";
+      const present=(state.npcs||[]).filter(n=>n.status==="present").map(n=>n.name);
+      return `${place.public_description}${present.length?` ${present.join(", ")} ${present.length===1?"is":"are"} here with you.`:""}`;
+    }
+    return null;
+  }
+
+  function knownPlaceMatch(text){
+    const t=commandText(text); const currentId=state.world?.current_place?.id;
+    const places=state.world?.known_places||[];
+    const scored=[];
+    for(const p of places){
+      const name=commandText(p.name||"");
+      let score=name && t.includes(name)?20:0;
+      const terms=queryTerms(t); const hay=`${name} ${commandText(p.public_description||"")}`;
+      for(const term of terms) if(hay.includes(term)) score+=1;
+      if(p.id===currentId) score-=0.25;
+      scored.push({p,score});
+    }
+    scored.sort((a,b)=>b.score-a.score);
+    if(!scored.length||scored[0].score<2) return null;
+    if(scored[0].score<20 && scored[1] && scored[0].score-scored[1].score<2) return null;
+    return scored[0].p;
+  }
+
+  function runtimeRouteBetween(fromId,toId){
+    const routes=state.runtime?.routes||[];
+    return routes.find(r=>r.from_place_id===fromId&&r.to_place_id===toId) || routes.find(r=>r.bidirectional&&r.from_place_id===toId&&r.to_place_id===fromId) || null;
+  }
+
+  function runtimeHazardsForRoute(route){
+    if(!route) return [];
+    const ids=new Set(route.hazards||[]);
+    return (state.runtime?.hazards||[]).filter(h=>ids.has(h.id));
+  }
+
+  function bestCapabilityForTags(tags=[]){
+    const wanted=new Set((tags||[]).map(x=>String(x).toLowerCase()));
+    const caps=[...(state.player?.public_capabilities||[]),...(state.player?.hidden_capabilities||[])];
+    let best=null,bestScore=-1;
+    for(const c of caps){
+      const overlap=(c.tags||[]).filter(t=>wanted.has(String(t).toLowerCase())).length;
+      if(!overlap) continue;
+      const levelScore=CAPABILITY_INDEX[String(c.level||"untrained").toLowerCase()]??0;
+      const score=overlap*10+levelScore;
+      if(score>bestScore){ best=c; bestScore=score; }
+    }
+    return best||{name:"Untrained",level:"untrained",tags:[]};
+  }
+
+  function runtimeRouteAdjudication(route,dest){
+    const hazards=runtimeHazardsForRoute(route);
+    if(hazards.length || (route.requirements||[]).length) return null; // typed hazard/requirement resolution comes in the next subsystem pass.
+    const diff=String(route.difficulty||"none");
+    const cap=bestCapabilityForTags(route.capability_tags||["travel"]);
+    const uncertain=!(["none","routine"].includes(diff));
+    return {
+      _local_runtime_action:"route_move",
+      runtime_payload:{route_id:route.id,destination_id:dest.id},
+      intent_summary:`Travel to ${dest.name} via ${route.mode||"the established route"}.`,intent_type:"act",pending_disposition:"none",commitment:"committed",complexity:"routine",escalation_recommended:false,escalation_reason:"Compiled route data is sufficient for local resolution.",
+      action_kind:"move",action_possible:true,meaningful_consequence:uncertain,checkpoint_required:uncertain,resolution_required:uncertain,deterministic_outcome:uncertain?"none":"success",
+      reason:uncertain?"The route is established, but its compiled travel demand makes the outcome uncertain.":"The route is established and has no compiled obstacle requiring resolution.",
+      capability_name:cap.name||"Untrained",capability_level:String(cap.level||"untrained").toLowerCase(),difficulty:uncertain?diff:"none",factors:[],
+      stakes:{success:`Reach ${dest.name}.`,failure:`The route attempt does not successfully reach ${dest.name} as intended.`},
+      time_cost_hint:route.travel_time_hint||"Travel along the established route.",
+      assessment:{perceived_difficulty:uncertain?diff:"none",perceived_factors:[],apparent_success_stakes:`Reach ${dest.name}.`,apparent_failure_stakes:uncertain?`The trip may fail or be interrupted before reaching ${dest.name}.`:"",uncertainty_note:uncertain?`The route itself is known, but it is ${diff}.`:"",confidence:"high"}
+    };
+  }
+
+  function presentNpcCanAccompany(n){
+    const hay=commandText(`${n.public?.role||""} ${n.public?.relationship||""} ${n.hidden?.current_intention||""} ${(n.hidden?.goals||[]).join(" ")}`);
+    return /father|mother|parent|companion|accompany|follow|stay close|protect|beside|with will|with the player/.test(hay);
+  }
+
+  function simpleKnownPlaceMove(text){
+    const t=commandText(text);
+    if(!/\b(go|move|walk|head|return|back|climb|get|step|travel)\b/.test(t)) return null;
+    if(/\b(search|explore|follow|chase|track|sneak|run|flee|escape)\b/.test(t)) return null;
+    const dest=knownPlaceMatch(text); if(!dest) return null;
+    if(dest.id===state.world?.current_place?.id) return {message:`You are already at ${dest.name}.`,no_turn:true};
+    const present=(state.npcs||[]).filter(n=>n.status==="present");
+    if(present.some(n=>!presentNpcCanAccompany(n))) return null;
+
+    const currentId=state.world?.current_place?.id||"";
+    const runtime=normalizeRuntimePackage(state.runtime);
+    const route=runtimeRouteBetween(currentId,dest.id);
+    if(runtime.route_policy==="explicit"){
+      if(!route) return null; // No compiled connection: do not assume geography. Let the referee/world layer handle it.
+      const routeAdj=runtimeRouteAdjudication(route,dest);
+      if(!routeAdj) return null;
+      if(routeAdj.resolution_required) return {runtime_adj:routeAdj};
+      const u=emptyUpdates(); u.current_place=deepClone(dest);
+      const npcActions=present.map(n=>({npc_id:n.id,action:`Accompanies ${state.player?.name||"the protagonist"} to ${dest.name}.`,player_visible:true,hidden_reason:"The NPC's established relationship or current intention supports staying with the protagonist."}));
+      return {adj:localAdj({intent_summary:routeAdj.intent_summary,action_kind:"move",narration:`You follow ${route.mode||"the established route"} to ${dest.name}. ${dest.public_description}`,updates:u,npc_actions:npcActions,reason:routeAdj.reason,time_cost_hint:route.travel_time_hint||"Travel along the established route."})};
+    }
+
+    // Legacy/permissive packages preserve pre-v0.6 behavior until campaign-specific routes exist.
+    const u=emptyUpdates(); u.current_place=deepClone(dest);
+    const npcActions=present.map(n=>({npc_id:n.id,action:`Accompanies ${state.player?.name||"the protagonist"} to ${dest.name}.`,player_visible:true,hidden_reason:"The NPC's established relationship or current intention supports staying with the protagonist."}));
+    return {adj:localAdj({intent_summary:`Move to ${dest.name}.`,action_kind:"move",narration:`You make your way to ${dest.name}. ${dest.public_description}`,updates:u,npc_actions:npcActions,reason:"Legacy/permissive runtime package allows movement between already-established known places when no obstacle is recorded.",time_cost_hint:"A short move between established nearby places."})};
+  }
+
+  function simpleRestAction(text){
+    const t=commandText(text);
+    if(!/^(rest|take a break|catch my breath|catch our breath|pause and rest|let's rest|lets rest)$/.test(t)) return null;
+    if(/\b(until|hour|hours|night|morning|sleep)\b/.test(t)) return null;
+    const place=state.world?.current_place?.name||"where you are";
+    const rp=normalizeRuntimePackage(state.runtime).rest_profile;
+    const recovery=rp.brief_rest_recovery==="limited"?" The campaign permits only limited brief-rest recovery; no specific condition is changed unless another subsystem defines it.":" No automatic healing or recovery is applied.";
+    return localAdj({intent_summary:"Pause briefly to rest.",action_kind:"rest",narration:`You pause at ${place} and take a little time to rest.${recovery}`,reason:"The compiled runtime package defines brief rest as deterministic.",time_cost_hint:rp.brief_rest_time_hint||"A brief rest."});
+  }
+
+  function socialChallengeText(text){
+    return /\b(persuade|convince|deceive|lie|bluff|threaten|intimidate|bribe|bargain|negotiate|interrogate|seduce|coerce|command)\b/i.test(text);
+  }
+
+  function conversationTarget(text){
+    const present=(state.npcs||[]).filter(n=>n.status==="present");
+    if(!present.length) return null;
+    const t=commandText(text);
+    for(const n of present){ if(n.name && t.includes(commandText(n.name))) return n; }
+    if(/\b(father|dad|mother|mom)\b/.test(t)){
+      const family=present.find(n=>/father|mother|parent/.test(commandText(`${n.public?.role||""} ${n.public?.relationship||""}`)));
+      if(family) return family;
+    }
+    if(present.length===1 && (/\b(what should we|what do you think|what do we do|how should we|where should we|ask him|ask her|tell him|tell her)\b/.test(t))) return present[0];
+    return null;
+  }
+
+  async function tryRoutineNpcConversation(text){
+    if(socialChallengeText(text)) return false;
+    const npc=conversationTarget(text); if(!npc) return false;
+    const api=await callWorker(npcReplyPrompt(npc,text),"npc_reply","npc_reply");
+    const out=api.data;
+    const u=emptyUpdates();
+    if(out.new_intention && out.new_intention!==npc.hidden?.current_intention) u.npc_intention_changes.push({npc_id:npc.id,current_intention:out.new_intention});
+    const adj=localAdj({intent_summary:`Speak with ${npc.name}.`,action_kind:"communicate",narration:out.message,updates:u,npc_actions:[{npc_id:npc.id,action:out.action||`Responds to ${state.player?.name||"the protagonist"}.`,player_visible:true,hidden_reason:out.hidden_reason||"Routine autonomous NPC response."}],reason:"The engine identified an ordinary conversation with a present NPC; only NPC cognition required AI.",time_cost_hint:"A brief exchange."});
+    addDebug({phase:"npc_reply",model:api.model,ai_profile:api.ai_profile,request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,request_metrics:api.request_metrics,npc_id:npc.id});
+    await resolveCommittedAction(text,adj);
+    return true;
+  }
+
+  function shouldUseNarrowClarification(text){
+    const t=commandText(text);
+    if(!/[?]$/.test(String(text).trim()) && !/^(how|what|where|why|who)\b/.test(t)) return false;
+    if(/\b(what happens if|what are my chances|odds|risk|can i (shoot|attack|jump|climb|break|steal|open|cross|enter|follow|search|use|drink|eat))\b/.test(t)) return false;
+    return true;
+  }
+
+  async function tryLocalFirst(text){
+    const info=localInformationResponse(text);
+    if(info){ addMessage("narrator",info); addDebug({phase:"local_clarification",ai_used:false,kind:"state_query"}); return true; }
+
+    const move=simpleKnownPlaceMove(text);
+    if(move){
+      if(move.no_turn){ addMessage("narrator",move.message); addDebug({phase:"local_clarification",ai_used:false,kind:"already_at_place"}); }
+      else if(move.runtime_adj){
+        const adj=move.runtime_adj;
+        const a=await makeAssessmentMessage(text,adj,true);
+        state.pending_action={id:crypto.randomUUID(),created_at:now(),created_turn:state.turn,state_revision:state.revision,original_text:text,intent_summary:adj.intent_summary,adjudication:deepClone(adj),assessment_message:a.message,perceived_likelihood:a.preview.display_likelihood_band};
+        addMessage("narrator",a.message);
+        addEvent("pending_action_created",{intent:adj.intent_summary,action_kind:adj.action_kind,perceived_likelihood:a.preview.display_likelihood_band,meaningful_consequence:adj.meaningful_consequence,local_runtime:true});
+        addDebug({phase:"runtime_route_checkpoint",ai_used:false,route_id:adj.runtime_payload?.route_id,preview:a.preview});
+      } else await resolveCommittedAction(text,move.adj);
+      return true;
+    }
+
+    const rest=simpleRestAction(text);
+    if(rest){ await resolveCommittedAction(text,rest); return true; }
+
+    if(await tryRoutineNpcConversation(text)) return true;
+
+    if(shouldUseNarrowClarification(text)){
+      const api=await callWorker(clarificationPrompt(text),"clarify","clarify");
+      addMessage("narrator",api.data.message);
+      addDebug({phase:"clarification",model:api.model,ai_profile:api.ai_profile,request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,request_metrics:api.request_metrics});
+      return true;
+    }
+    return false;
+  }
+
   async function playTurn(){
     const text=el.playerInput.value.trim(); if(!text||busy||!state.campaign) return;
     setBusy(true,"Preparing turn...");
@@ -1635,6 +2251,8 @@ ${JSON.stringify(directorContext(trigger))}`;
           persist(); return;
         }
       }
+
+      if(await tryLocalFirst(text)){ persist(); return; }
 
       let aApi=await callWorker(adjudicationPrompt(text,"routine"),"adjudicate");
       let adj=aApi.data;
@@ -1668,17 +2286,19 @@ ${JSON.stringify(directorContext(trigger))}`;
           persist(); return;
         }
         if(adj.pending_disposition==="cancel"){
-          assertNonTurnOutput(adj);
           addEvent("pending_action_cancelled",{intent:state.pending_action.intent_summary,response:text});
           state.pending_action=null;
-          addMessage("narrator",adj.narration||"You hold off.");
+          addMessage("narrator","You hold off.");
           persist(); return;
         }
         if(adj.pending_disposition==="keep"){
-          assertNonTurnOutput(adj);
-          if(adj.intent_type==="assess" && adj.resolution_required){
-            const a=await makeAssessmentMessage(text,adj,false); addMessage("narrator",a.message); addDebug({phase:"assessment",model:a.api.model,ai_profile:a.api.ai_profile,preview:a.preview,request_id:a.api.openai_request_id,usage:a.api.usage,request_metrics:a.api.request_metrics});
-          }else addMessage("narrator",adj.narration||"The referee clarifies the situation.");
+          if(adj.intent_type==="assess"){
+            const a=await makeAssessmentMessage(text,adj,false); addMessage("narrator",a.message); addDebug({phase:"assessment_local",model:a.api.model,ai_profile:a.api.ai_profile,preview:a.preview,usage:null,request_metrics:a.api.request_metrics});
+          }else{
+            const cApi=await callWorker(clarificationPrompt(text),"clarify","clarify");
+            addMessage("narrator",cApi.data.message);
+            addDebug({phase:"clarification",model:cApi.model,ai_profile:cApi.ai_profile,request_id:cApi.openai_request_id,response_id:cApi.response_id,usage:cApi.usage,request_metrics:cApi.request_metrics});
+          }
           persist(); return;
         }
         if(adj.pending_disposition==="replace"){
@@ -1688,8 +2308,9 @@ ${JSON.stringify(directorContext(trigger))}`;
       }
 
       if(["clarify","meta","confirm_pending","cancel_pending"].includes(adj.intent_type)){
-        assertNonTurnOutput(adj);
-        addMessage("narrator",adj.narration||"The referee clarifies the situation.");
+        const cApi=await callWorker(clarificationPrompt(text),"clarify","clarify");
+        addMessage("narrator",cApi.data.message);
+        addDebug({phase:"clarification",model:cApi.model,ai_profile:cApi.ai_profile,request_id:cApi.openai_request_id,response_id:cApi.response_id,usage:cApi.usage,request_metrics:cApi.request_metrics});
         persist(); return;
       }
 
@@ -1698,7 +2319,7 @@ ${JSON.stringify(directorContext(trigger))}`;
         const a=await makeAssessmentMessage(text,adj,false);
         addMessage("narrator",a.message);
         addEvent("assessment_only",{intent:adj.intent_summary,preview_band:a.preview.display_likelihood_band,confidence:adj.assessment.confidence});
-        addDebug({phase:"assessment",model:a.api.model,ai_profile:a.api.ai_profile,preview:a.preview,request_id:a.api.openai_request_id,usage:a.api.usage,request_metrics:a.api.request_metrics});
+        addDebug({phase:"assessment_local",model:a.api.model,ai_profile:a.api.ai_profile,preview:a.preview,usage:null,request_metrics:a.api.request_metrics});
         persist(); return;
       }
 
@@ -1718,7 +2339,7 @@ ${JSON.stringify(directorContext(trigger))}`;
         };
         addMessage("narrator",a.message);
         addEvent("pending_action_created",{intent:adj.intent_summary,action_kind:adj.action_kind,perceived_likelihood:a.preview.display_likelihood_band,meaningful_consequence:adj.meaningful_consequence});
-        addDebug({phase:"assessment_checkpoint",model:a.api.model,ai_profile:a.api.ai_profile,preview:a.preview,request_id:a.api.openai_request_id,usage:a.api.usage,request_metrics:a.api.request_metrics});
+        addDebug({phase:"assessment_checkpoint_local",model:a.api.model,ai_profile:a.api.ai_profile,preview:a.preview,usage:null,request_metrics:a.api.request_metrics});
         persist(); return;
       }
 
@@ -1761,11 +2382,29 @@ ${JSON.stringify(directorContext(trigger))}`;
   }
 
   function requestSizeSummary(){
-    const rows=(state.debug_log||[]).map(d=>d.request_metrics).filter(Boolean).slice(-50);
+    const rows=(state.debug_log||[]).map(d=>d.request_metrics).filter(r=>r&&Number(r.approximate_input_tokens)>0).slice(-50);
     if(!rows.length) return {samples:0};
     const avg=(key)=>Math.round(rows.reduce((sum,r)=>sum+(Number(r[key])||0),0)/rows.length);
     const max=(key)=>Math.max(...rows.map(r=>Number(r[key])||0));
     return {samples:rows.length,average_input_chars:avg("input_chars"),max_input_chars:max("input_chars"),average_schema_chars:avg("schema_chars"),average_approximate_input_tokens:avg("approximate_input_tokens"),max_approximate_input_tokens:max("approximate_input_tokens")};
+  }
+
+  function localEngineUsageSummary(){
+    const rows=state.debug_log||[];
+    const localPhases=new Set(["local_resolution","local_runtime_resolution","runtime_route_checkpoint","local_clarification","pending_local_confirm","pending_local_cancel","assessment_local","assessment_checkpoint_local","director_trigger_local"]);
+    const aiRows=rows.filter(d=>d.usage&&Number(d.usage?.input_tokens||0)>0);
+    return {
+      local_events:rows.filter(d=>localPhases.has(d.phase)).length,
+      local_resolutions:rows.filter(d=>["local_resolution","local_runtime_resolution"].includes(d.phase)).length,
+      runtime_route_resolutions:rows.filter(d=>d.phase==="local_runtime_resolution").length,
+      local_clarifications:rows.filter(d=>d.phase==="local_clarification").length,
+      local_assessments:rows.filter(d=>["assessment_local","assessment_checkpoint_local"].includes(d.phase)).length,
+      narrow_npc_calls:rows.filter(d=>d.phase==="npc_reply").length,
+      narrow_clarification_calls:rows.filter(d=>d.phase==="clarification").length,
+      api_calls:aiRows.length,
+      api_input_tokens:aiRows.reduce((n,d)=>n+Number(d.usage?.input_tokens||0),0),
+      api_output_tokens:aiRows.reduce((n,d)=>n+Number(d.usage?.output_tokens||0),0)
+    };
   }
 
   async function exportDebug(){
@@ -1778,18 +2417,22 @@ ${JSON.stringify(directorContext(trigger))}`;
         app_version:APP_VERSION,
         schema_version:SCHEMA_VERSION,
         probability_engine_version:PROBABILITY_ENGINE_VERSION,
+        local_resolution_engine_version:LOCAL_RESOLUTION_ENGINE_VERSION,
+        build_id:BUILD_ID,
         turn:state.turn,
         revision:state.revision,
         campaign_active:!!state.campaign,
         pending_action:state.pending_action?{id:state.pending_action.id,intent_summary:state.pending_action.intent_summary,created_turn:state.pending_action.created_turn,state_revision:state.pending_action.state_revision,perceived_likelihood:state.pending_action.perceived_likelihood}:null,
         hints:state.ui_preferences||{hints_enabled:false,hint_style:"gentle"},
-        counts:{transcript:(state.transcript||[]).length,events:(state.event_log||[]).length,debug_entries:(state.debug_log||[]).length,npcs:(state.npcs||[]).length,threads:(state.threads||[]).length,facts:(state.world?.facts||[]).length,anchors:(state.scenario?.anchors||[]).length},
+        counts:{transcript:(state.transcript||[]).length,events:(state.event_log||[]).length,debug_entries:(state.debug_log||[]).length,npcs:(state.npcs||[]).length,threads:(state.threads||[]).length,facts:(state.world?.facts||[]).length,anchors:(state.scenario?.anchors||[]).length,runtime_actions:(state.runtime?.action_demands||[]).length,routes:(state.runtime?.routes||[]).length,hazards:(state.runtime?.hazards||[]).length},runtime:{version:state.runtime?.version||null,route_policy:state.runtime?.route_policy||null},
         scenario:{mode:state.scenario?.mode||null,needs_bootstrap:state.scenario?.director?.needs_bootstrap===true,turns_since_development:state.scenario?.director?.turns_since_development||0,active_or_eligible:(state.scenario?.anchors||[]).filter(a=>["active","eligible"].includes(a.status)).map(a=>a.id)},
         connection:{worker:worker(),game_token_present:!!token(),game_token_persisted:!!localStorage.getItem(TOKEN_KEY),gateway_health:health},
         browser:{user_agent:navigator.userAgent,language:navigator.language,platform:navigator.platform,on_line:navigator.onLine,viewport:{width:window.innerWidth,height:window.innerHeight},timezone:Intl.DateTimeFormat().resolvedOptions().timeZone||null},
         ai_profiles:AI_PROFILES,
         context_policy:CONTEXT_POLICY,
-        request_size_summary:requestSizeSummary()
+        request_token_budgets:REQUEST_TOKEN_BUDGETS,
+        request_size_summary:requestSizeSummary(),
+        local_engine_usage:localEngineUsageSummary()
       };
       exportJson(`universal-rpg-debug-turn-${state.turn}-${new Date().toISOString().replace(/[:.]/g,"-")}.json`,{
         exported_at:now(),
