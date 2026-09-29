@@ -1,3 +1,153 @@
+## Version 0.6.2
+Date: 2026-09-28
+
+### Milestone
+Implemented the **Canonical Source Sequence Lock** after the v0.6.1 Dinotopia validation showed that runtime stability and scenario movement were working, but Canonical source fidelity was still too permissive. The compiler had preserved recognizable characters and destinations while allowing intermediate source events to be omitted or reordered, which made Canonical behave closer to Adaptive mode.
+
+No Cloudflare Worker changes are required. Save schema remains 5 and the browser state key remains `universalRpg.state.v0_6`.
+
+### Failure reproduced from the v0.6.1 validation run
+The campaign request explicitly selected `Canonical` and asked to stay as true to the book storyline as possible, but the compiled scenario reduced the opening to broad anchors such as first contact, Bix, customs, Waterfall City, Sylvia, and skybax. Waterfall City became eligible before Sylvia, while the opening history contained only the generic fact that Will and Arthur survived the shipwreck. As play advanced, Bix therefore had permission to become the immediate guide toward Waterfall City rather than preserving the source's intervening opening sequence.
+
+The defect was not primarily the Adventure Director. The Director followed the scenario graph it was given. The compiler did not encode enough source chronology, and the runtime had no deterministic rule preventing a later canonical anchor from becoming eligible before earlier source beats.
+
+### Canonical opening history
+Scenario state now contains `opening_canon[]`, a structured list of source events that are already true before the first player-controlled moment.
+
+Each record contains:
+- stable id;
+- label;
+- concise source-faithful summary;
+- public/hidden visibility.
+
+For a Canonical adaptation, the compiler is instructed to reconstruct the immediate pre-play source history before constructing future anchors. Protagonist-known opening canon that explains the character's present circumstances should be reflected in the opening narration rather than silently disappearing from history.
+
+This is specifically intended to prevent cases such as a source-defined rescue, arrival, separation, prior meeting, or other opening event from being reduced to a generic `survived` fact.
+
+### Ordered canonical anchors
+Scenario anchors now carry explicit chronology metadata:
+- `sequence_index`
+- `sequence_policy`: `locked`, `preserve`, or `flexible`
+- `event_identity`
+- `prerequisite_anchor_ids[]`
+- `required_npc_ids[]`
+
+Semantics:
+- **locked** — the source event identity and relative order are source-critical; it can be skipped only when established play genuinely makes it impossible/inappropriate;
+- **preserve** — preserve the source event and relative order, while allowing substantial adaptation of staging, route, exact timing, or dialogue;
+- **flexible** — the source allows freer relocation, combination, or reordering.
+
+Canonical major/supporting anchors are expected to be predominantly `locked` or `preserve`, not all `flexible`.
+
+### Canonical compiler changes
+The campaign compiler now treats Canonical mode as a chronology-compilation task rather than a list of recognizable source landmarks.
+
+It is instructed to:
+- reconstruct the source chronology from immediate pre-play history through the next several important beats;
+- compile roughly 5-10 anchors for a typical Canonical opening rather than collapsing the story into a few famous destinations;
+- preserve important intermediate encounters and transitional locations;
+- avoid substituting generic setting customs/exposition for a source-critical encounter;
+- chain later anchors to earlier prerequisites;
+- keep later destinations pending until intervening preserved events resolve;
+- compile NPCs required by near-term canonical anchors even when those NPCs remain offscreen;
+- remain conservative when exact source chronology is uncertain rather than promoting a later event ahead of an uncertain intermediate beat.
+
+The general opening-framework target is now 4-10 anchors instead of 3-8.
+
+### Deterministic compiler validation
+Canonical packages now receive deterministic chronology validation in addition to the existing structural/runtime checks.
+
+Validation checks include:
+- duplicate canonical `sequence_index` values;
+- missing `event_identity`;
+- invalid prerequisite anchor ids;
+- prerequisites that point forward rather than backward in the source sequence;
+- required NPC ids that were not compiled;
+- Canonical campaigns in which every source anchor is marked flexible;
+- later preserved/locked anchors with no prerequisite chain;
+- multiple later anchors being active/eligible ahead of the current canonical frontier.
+
+A package that fails these checks goes through the existing Sol/High targeted repair path and can still escalate to Astra/High only if repair fails.
+
+### Runtime canonical frontier
+The local runtime now computes a **canonical frontier**: the earliest unresolved non-optional canonical anchor whose sequence policy is `locked` or `preserve`.
+
+The browser deterministically:
+- promotes the frontier from `pending` to `eligible` when its prerequisites are satisfied;
+- keeps later preserved/locked anchors pending;
+- unlocks the next source beat when the previous beat becomes `completed`, `bypassed`, or `impossible`;
+- rejects an update that tries to complete/activate a later preserved canonical anchor before its prerequisite source beats are resolved.
+
+This turns source order from prompt advice into a validated state invariant.
+
+### Director and narration source discipline
+The Adventure Director now receives the canonical sequence around the current frontier rather than merely relevance-ranked anchors. In Canonical mode it is explicitly prohibited from:
+- advancing a later source event while an earlier preserved beat remains possible;
+- naming a later destination as the party's next source-driven objective when doing so would replace an earlier beat;
+- treating a different reasonable route as sufficient reason to bypass canon.
+
+Outcome/narration prompts receive the same rule: a successful action may change staging but cannot be used as a shortcut to a later canonical event.
+
+### Routine NPC chronology guard
+Routine NPC cognition now receives a compact hidden canonical-sequence slice in Canonical campaigns. This is important because the v0.6.1 drift was not limited to the Director: an autonomous NPC could naturally offer a later destination even when the correct source sequence had not reached it.
+
+NPC dialogue may still be autonomous and responsive, but it may not offer a route, destination, relationship, or source development that skips/replaces the current canonical frontier. The hidden sequence is never exposed to the player.
+
+### Existing-save behavior
+v0.6.2 remains schema-5 compatible. Older scenario records are normalized with defaults for the new sequence fields, so existing saves should load.
+
+However, **a fresh campaign is strongly recommended for Canonical fidelity testing**. v0.6.2 cannot safely rewrite already-established history. If an older save has already omitted an opening source event or established a later destination out of order, the migration layer will not pretend the missing event occurred retroactively. Scenario bootstrap/repair is deliberately forward-looking.
+
+For the next Dinotopia experiment, create a new Canonical campaign using the same request rather than continuing the v0.6.1 run. The key validation target is whether the compiler now records the proper opening history and produces a granular ordered sequence before later destinations become eligible.
+
+### Cost/testing isolation
+This checkpoint intentionally does **not** add a new Director-call suppression optimization. The prior v0.6.1 test established a functioning cost baseline of roughly 2.8 cents per runtime turn with the Director active. Keeping Director triggering substantially unchanged lets the next experiment isolate whether the Canonical fidelity changes improve source behavior without conflating that result with another major cost-routing change.
+
+Once fidelity is validated, the next cost target remains reducing no-op Director calls locally.
+
+### Build identity
+- Application version: `0.6.2`
+- Build ID: `2026-09-28b`
+- Save schema: 5
+- Browser state key: `universalRpg.state.v0_6`
+- Probability Engine: 1.0
+- Local Resolution Engine: 1.2
+- Cloudflare Worker: unchanged
+
+### Validation performed
+- Extracted the embedded JavaScript and passed `node --check` successfully.
+- Verified all visible/internal v0.6.1 prompt/version labels were advanced to v0.6.2 and build ID `2026-09-28b`.
+- Verified the compiled schema now requires `opening_canon` plus canonical sequence metadata on anchors.
+- Ran a focused deterministic canonical-sequence regression with four chained source beats. The runtime promoted only the first beat, unlocked the second after the first completed, and rejected an attempted completion of the fourth beat while its prerequisite sequence remained unresolved.
+- Verified migrated/legacy scenarios receive defaults for the new additive fields.
+- Verified scenario bootstrap validates required NPC references against both existing NPCs and the bootstrap's proposed NPC additions before committing.
+- Confirmed the Worker contract and gateway are unchanged.
+
+### Known limitations
+- Source fidelity is still bounded by the source information available to the compiler. Without imported source text/module data, the model can still be uncertain about obscure chronology. v0.6.2 is designed to fail conservatively—preserving an uncertain intermediate beat rather than jumping to a later famous event—but it cannot guarantee perfect source scholarship from model memory alone.
+- No source provenance/page citation layer exists yet. A future source compiler should attach each canonical beat to source/page/chapter provenance when documents are provided.
+- Existing campaigns that already drifted from canon are not automatically rewritten backward.
+- Runtime place/route extension remains incomplete.
+- Director content remains model-assisted; this release adds deterministic chronology gating but not full deterministic trigger/completion evaluation.
+- Resources, survival/recovery, typed equipment, executable hazards, combat/injury, deterministic NPC utility, multi-character control, and death/continuity remain future runtime layers.
+
+### Recommended next test
+Start a fresh Dinotopia campaign with:
+- Source mode: `Canonical`
+- Player: Will Denison
+- Source note: `Stay as true to the book storyline as possible.`
+
+Before playing far, export debug after campaign creation or after 1-2 turns and inspect:
+1. `scenario.opening_canon` for the immediate source-established arrival/rescue history;
+2. canonical anchor order and prerequisites;
+3. whether the next source-critical encounter is the only preserved/locked frontier;
+4. whether later destinations remain pending;
+5. whether the opening narration acknowledges protagonist-known opening history.
+
+If those are correct, continue 10-15 turns and then reassess both source fidelity and cost.
+
+---
+
 ## Version 0.6.1
 Date: 2026-09-28
 

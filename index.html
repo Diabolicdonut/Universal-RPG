@@ -47,7 +47,7 @@
 <body>
 <div class="app" id="app">
   <header>
-    <div class="brand">Universal RPG</div><div class="version">v0.6.1</div>
+    <div class="brand">Universal RPG</div><div class="version">v0.6.2</div>
     <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Not connected</span></div>
     <div class="spacer"></div>
     <button class="btn small" id="newBtn">New Campaign</button>
@@ -115,8 +115,8 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "0.6.1";
-  const BUILD_ID = "2026-09-28a";
+  const APP_VERSION = "0.6.2";
+  const BUILD_ID = "2026-09-28b";
   const SCHEMA_VERSION = 5;
   const STATE_KEY = "universalRpg.state.v0_6";
   const LEGACY_STATE_KEYS = ["universalRpg.state.v0_4", "universalRpg.state.v0_3", "universalRpg.state.v0_2", "universalRpg.state.v0_1"];
@@ -206,26 +206,35 @@ Never silently rewrite established state. The player controls one protagonist; a
     type:"object", properties:{ id:{type:"string"}, label:{type:"string"}, status:{type:"string",enum:["open","closed","failed","dormant"]}, visibility:{type:"string",enum:["public","hidden"]} },
     required:["id","label","status","visibility"], additionalProperties:false
   };
+  const OPENING_CANON_SCHEMA = {
+    type:"object",
+    properties:{
+      id:{type:"string"}, label:{type:"string"}, summary:{type:"string"}, visibility:{type:"string",enum:["public","hidden"]}
+    },
+    required:["id","label","summary","visibility"], additionalProperties:false
+  };
   const ANCHOR_SCHEMA = {
     type:"object",
     properties:{
       id:{type:"string"}, label:{type:"string"}, status:{type:"string",enum:["pending","eligible","active","completed","bypassed","impossible"]},
       importance:{type:"string",enum:["major","supporting","optional"]}, source_role:{type:"string",enum:["canonical","source_inspired","original"]}, visibility:{type:"string",enum:["public","hidden"]},
+      sequence_index:{type:"integer"}, sequence_policy:{type:"string",enum:["locked","preserve","flexible"]}, event_identity:{type:"string"},
+      prerequisite_anchor_ids:{type:"array",items:{type:"string"}}, required_npc_ids:{type:"array",items:{type:"string"}},
       trigger_conditions:{type:"array",items:{type:"string"}}, completion_conditions:{type:"array",items:{type:"string"}}, adaptation_guidance:{type:"array",items:{type:"string"}}, blocking_conditions:{type:"array",items:{type:"string"}}
     },
-    required:["id","label","status","importance","source_role","visibility","trigger_conditions","completion_conditions","adaptation_guidance","blocking_conditions"], additionalProperties:false
+    required:["id","label","status","importance","source_role","visibility","sequence_index","sequence_policy","event_identity","prerequisite_anchor_ids","required_npc_ids","trigger_conditions","completion_conditions","adaptation_guidance","blocking_conditions"], additionalProperties:false
   };
   const SCENARIO_SCHEMA = {
     type:"object",
     properties:{
-      mode:{type:"string",enum:["original","source_guided"]}, objective:{type:"string"}, anchors:{type:"array",items:ANCHOR_SCHEMA}, director_rules:{type:"array",items:{type:"string"}},
+      mode:{type:"string",enum:["original","source_guided"]}, objective:{type:"string"}, opening_canon:{type:"array",items:OPENING_CANON_SCHEMA}, anchors:{type:"array",items:ANCHOR_SCHEMA}, director_rules:{type:"array",items:{type:"string"}},
       director:{
         type:"object",
         properties:{needs_bootstrap:{type:"boolean"},turns_since_development:{type:"integer"},last_development_turn:{type:"integer"},last_place_id:{type:"string"},repeat_place_turns:{type:"integer"}},
         required:["needs_bootstrap","turns_since_development","last_development_turn","last_place_id","repeat_place_turns"], additionalProperties:false
       }
     },
-    required:["mode","objective","anchors","director_rules","director"], additionalProperties:false
+    required:["mode","objective","opening_canon","anchors","director_rules","director"], additionalProperties:false
   };
   const RUNTIME_ACTION_SCHEMA = {
     type:"object",
@@ -403,7 +412,7 @@ Never silently rewrite established state. The player controls one protagonist; a
   // The AI classifies fictional facts into bounded semantic categories; local JS owns the math and RNG.
   // Baseline anchor: a Competent character attempting a Standard task under neutral conditions succeeds ~70% of the time.
   const PROBABILITY_ENGINE_VERSION = "1.0";
-  const LOCAL_RESOLUTION_ENGINE_VERSION = "1.1";
+  const LOCAL_RESOLUTION_ENGINE_VERSION = "1.2";
   const CAPABILITY_INDEX = Object.freeze({ untrained:0, novice:1, familiar:2, competent:3, skilled:4, expert:5, master:6, legendary:7 });
   const DIFFICULTY_INDEX = Object.freeze({ routine:0, easy:1, standard:2, difficult:3, formidable:4, extreme:5 });
   const BASELINE_LOGIT = Math.log(.70/.30);
@@ -454,13 +463,22 @@ Never silently rewrite established state. The player controls one protagonist; a
     return {needs_bootstrap:needsBootstrap===true,turns_since_development:0,last_development_turn:Number.isInteger(raw?.turn)?raw.turn:0,last_place_id:raw?.world?.current_place?.id||"",repeat_place_turns:0};
   }
   function legacyScenarioFor(raw){
-    return {mode:scenarioModeForSourceMode(raw?.campaign?.source_mode),objective:raw?.campaign?.premise||"Continue the campaign from established state.",anchors:[],director_rules:["Advance the world when the current scene has exhausted itself.","Autonomous NPCs may act without waiting for a player prompt.","Do not force player choices or predetermined outcomes."],director:freshDirectorState(raw,!!raw?.campaign)};
+    return {mode:scenarioModeForSourceMode(raw?.campaign?.source_mode),objective:raw?.campaign?.premise||"Continue the campaign from established state.",opening_canon:[],anchors:[],director_rules:["Advance the world when the current scene has exhausted itself.","Autonomous NPCs may act without waiting for a player prompt.","Do not force player choices or predetermined outcomes."],director:freshDirectorState(raw,!!raw?.campaign)};
   }
   function normalizeScenario(rawScenario,ownerState=state){
     const scenario=rawScenario&&typeof rawScenario==="object"?rawScenario:legacyScenarioFor(ownerState);
     scenario.mode=["original","source_guided"].includes(scenario.mode)?scenario.mode:scenarioModeForSourceMode(ownerState?.campaign?.source_mode);
     scenario.objective=String(scenario.objective||ownerState?.campaign?.premise||"Continue the campaign.");
+    scenario.opening_canon=Array.isArray(scenario.opening_canon)?scenario.opening_canon:[];
     scenario.anchors=Array.isArray(scenario.anchors)?scenario.anchors:[];
+    const canonicalMode=String(ownerState?.campaign?.source_mode||"")==="Canonical";
+    scenario.anchors.forEach((a,i)=>{
+      a.sequence_index=Number.isInteger(a.sequence_index)?a.sequence_index:((i+1)*10);
+      a.sequence_policy=["locked","preserve","flexible"].includes(a.sequence_policy)?a.sequence_policy:((canonicalMode&&a.source_role==="canonical")?"preserve":"flexible");
+      a.event_identity=String(a.event_identity||a.label||"");
+      a.prerequisite_anchor_ids=Array.isArray(a.prerequisite_anchor_ids)?a.prerequisite_anchor_ids:[];
+      a.required_npc_ids=Array.isArray(a.required_npc_ids)?a.required_npc_ids:[];
+    });
     scenario.director_rules=Array.isArray(scenario.director_rules)?scenario.director_rules:[];
     scenario.director=scenario.director&&typeof scenario.director==="object"?scenario.director:freshDirectorState(ownerState,!!ownerState?.campaign);
     scenario.director.needs_bootstrap=scenario.director.needs_bootstrap===true;
@@ -644,7 +662,7 @@ Never silently rewrite established state. The player controls one protagonist; a
         </div>
         <div class="hint-state ${hintEnabled?"on":""}">${hintEnabled?"Hints are enabled. Requesting one does not advance time or alter world state.":"Hints are disabled. Turn them on whenever you want help."}</div>
       </div>
-      <div class="card"><h3>Session</h3><div class="kv"><span class="label">Turn</span> ${state.turn}</div><details><summary>Developer snapshot</summary><div class="debug">${escapeHtml(JSON.stringify({schema:state.schema_version,local_engine:LOCAL_RESOLUTION_ENGINE_VERSION,probability_engine:PROBABILITY_ENGINE_VERSION,context_policy:"2.2",turn:state.turn,place:state.world?.current_place?.id,npcs:(state.npcs||[]).length,threads:(state.threads||[]).length,facts:(state.world?.facts||[]).length,anchors:(state.scenario?.anchors||[]).length,runtime_routes:(state.runtime?.routes||[]).length,runtime_hazards:(state.runtime?.hazards||[]).length,runtime_actions:(state.runtime?.action_demands||[]).length,active_anchor:(state.scenario?.anchors||[]).find(a=>["active","eligible"].includes(a.status))?.id||null,director_pressure:state.scenario?.director?.turns_since_development||0,revision:state.revision,pending:state.pending_action?.intent_summary||null,hints:hintPrefs},null,2))}</div></details></div>`;
+      <div class="card"><h3>Session</h3><div class="kv"><span class="label">Turn</span> ${state.turn}</div><details><summary>Developer snapshot</summary><div class="debug">${escapeHtml(JSON.stringify({schema:state.schema_version,local_engine:LOCAL_RESOLUTION_ENGINE_VERSION,probability_engine:PROBABILITY_ENGINE_VERSION,context_policy:"2.2",turn:state.turn,place:state.world?.current_place?.id,npcs:(state.npcs||[]).length,threads:(state.threads||[]).length,facts:(state.world?.facts||[]).length,anchors:(state.scenario?.anchors||[]).length,runtime_routes:(state.runtime?.routes||[]).length,runtime_hazards:(state.runtime?.hazards||[]).length,runtime_actions:(state.runtime?.action_demands||[]).length,active_anchor:(state.scenario?.anchors||[]).find(a=>["active","eligible"].includes(a.status))?.id||null,canonical_frontier:(String(state.campaign?.source_mode||"")==="Canonical"?canonicalOrderedAnchors(state).find(a=>!anchorTerminalStatus(a.status)&&a.sequence_policy!=="flexible")?.id:null)||null,opening_canon:(state.scenario?.opening_canon||[]).length,director_pressure:state.scenario?.director?.turns_since_development||0,revision:state.revision,pending:state.pending_action?.intent_summary||null,hints:hintPrefs},null,2))}</div></details></div>`;
     bindSidebarControls();
   }
 
@@ -919,17 +937,39 @@ Never silently rewrite established state. The player controls one protagonist; a
   }
 
   function compactAnchor(a){
-    return {id:a.id,label:compactText(a.label,350),status:a.status,importance:a.importance,source_role:a.source_role,visibility:a.visibility,trigger_conditions:(a.trigger_conditions||[]).slice(0,4).map(x=>compactText(x,400)),completion_conditions:(a.completion_conditions||[]).slice(0,4).map(x=>compactText(x,400)),adaptation_guidance:(a.adaptation_guidance||[]).slice(0,3).map(x=>compactText(x,400)),blocking_conditions:(a.blocking_conditions||[]).slice(0,3).map(x=>compactText(x,400))};
+    return {id:a.id,label:compactText(a.label,350),status:a.status,importance:a.importance,source_role:a.source_role,visibility:a.visibility,sequence_index:a.sequence_index,sequence_policy:a.sequence_policy,event_identity:compactText(a.event_identity,420),prerequisite_anchor_ids:(a.prerequisite_anchor_ids||[]).slice(0,5),required_npc_ids:(a.required_npc_ids||[]).slice(0,5),trigger_conditions:(a.trigger_conditions||[]).slice(0,4).map(x=>compactText(x,400)),completion_conditions:(a.completion_conditions||[]).slice(0,4).map(x=>compactText(x,400)),adaptation_guidance:(a.adaptation_guidance||[]).slice(0,3).map(x=>compactText(x,400)),blocking_conditions:(a.blocking_conditions||[]).slice(0,3).map(x=>compactText(x,400))};
+  }
+
+  function canonicalOrderedAnchors(owner=state){
+    return (owner?.scenario?.anchors||[]).filter(a=>a.source_role==="canonical").slice().sort((a,b)=>(a.sequence_index??999999)-(b.sequence_index??999999));
+  }
+
+  function canonicalSequenceSlice(max=CONTEXT_POLICY.max_anchors){
+    const ordered=canonicalOrderedAnchors(state);
+    if(!ordered.length) return [];
+    const terminal=new Set(["completed","bypassed","impossible"]);
+    let frontier=ordered.findIndex(a=>!terminal.has(a.status)&&a.sequence_policy!=="flexible");
+    if(frontier<0) frontier=Math.max(0,ordered.length-1);
+    const start=Math.max(0,frontier-1);
+    return ordered.slice(start,start+max);
   }
 
   function compactScenario(query,{publicOnly=false,max=CONTEXT_POLICY.max_anchors}={}){
     const s=state.scenario||{};
-    const anchors=(s.anchors||[]).filter(a=>!publicOnly||a.visibility!=="hidden");
-    const statusRank={active:0,eligible:1,pending:2,completed:3,bypassed:4,impossible:5};
-    const important=anchors.filter(a=>["active","eligible"].includes(a.status));
-    const ids=new Set(important.map(a=>a.id));
-    const rest=selectRelevant(anchors.filter(a=>!ids.has(a.id)),query,Math.max(0,max-important.length),a=>`${a.label} ${(a.trigger_conditions||[]).join(" ")} ${(a.adaptation_guidance||[]).join(" ")}`).sort((a,b)=>(statusRank[a.status]??9)-(statusRank[b.status]??9));
-    return {mode:s.mode||"original",objective:compactText(s.objective,600),anchors:[...important,...rest].slice(0,max).map(compactAnchor),director_rules:(s.director_rules||[]).slice(0,6).map(x=>compactText(x,450)),director:s.director||null};
+    let anchors=(s.anchors||[]).filter(a=>!publicOnly||a.visibility!=="hidden");
+    if(!publicOnly && String(state.campaign?.source_mode||"")==="Canonical"){
+      const seq=canonicalSequenceSlice(max).filter(a=>anchors.some(x=>x.id===a.id));
+      const seqIds=new Set(seq.map(a=>a.id));
+      const active=anchors.filter(a=>["active","eligible"].includes(a.status)&&!seqIds.has(a.id));
+      anchors=[...seq,...active].slice(0,max);
+    }else{
+      const statusRank={active:0,eligible:1,pending:2,completed:3,bypassed:4,impossible:5};
+      const important=anchors.filter(a=>["active","eligible"].includes(a.status));
+      const ids=new Set(important.map(a=>a.id));
+      const rest=selectRelevant(anchors.filter(a=>!ids.has(a.id)),query,Math.max(0,max-important.length),a=>`${a.label} ${(a.trigger_conditions||[]).join(" ")} ${(a.adaptation_guidance||[]).join(" ")}`).sort((a,b)=>(statusRank[a.status]??9)-(statusRank[b.status]??9));
+      anchors=[...important,...rest].slice(0,max);
+    }
+    return {mode:s.mode||"original",objective:compactText(s.objective,600),opening_canon:(s.opening_canon||[]).slice(0,5).map(x=>({id:x.id,label:compactText(x.label,180),summary:compactText(x.summary,360),visibility:x.visibility})),anchors:anchors.map(compactAnchor),director_rules:(s.director_rules||[]).slice(0,6).map(x=>compactText(x,450)),director:s.director||null};
   }
 
   function recentTranscript(limit,roles=["player","narrator"]){
@@ -979,9 +1019,14 @@ Never silently rewrite established state. The player controls one protagonist; a
   }
 
   function routineScenarioSlice(query,max=2){
-    const anchors=(state.scenario?.anchors||[]).filter(a=>["active","eligible"].includes(a.status));
-    const selected=selectRelevant(anchors,query,max,a=>`${a.label} ${(a.trigger_conditions||[]).join(" ")} ${(a.adaptation_guidance||[]).join(" ")}`);
-    return selected.map(a=>({id:a.id,label:compactText(a.label,180),status:a.status,importance:a.importance,trigger_conditions:(a.trigger_conditions||[]).slice(0,2).map(x=>compactText(x,180)),blocking_conditions:(a.blocking_conditions||[]).slice(0,1).map(x=>compactText(x,180))}));
+    let anchors=(state.scenario?.anchors||[]).filter(a=>["active","eligible"].includes(a.status));
+    if(String(state.campaign?.source_mode||"")==="Canonical"){
+      const ordered=canonicalSequenceSlice(Math.max(max,3));
+      const allowed=new Set(ordered.filter(a=>["active","eligible"].includes(a.status)).map(a=>a.id));
+      anchors=anchors.filter(a=>allowed.has(a.id)||a.sequence_policy==="flexible");
+    }
+    const selected=selectRelevant(anchors,query,max,a=>`${a.label} ${a.event_identity||""} ${(a.trigger_conditions||[]).join(" ")} ${(a.adaptation_guidance||[]).join(" ")}`);
+    return selected.map(a=>({id:a.id,label:compactText(a.label,180),status:a.status,importance:a.importance,sequence_index:a.sequence_index,sequence_policy:a.sequence_policy,event_identity:compactText(a.event_identity,220),prerequisite_anchor_ids:(a.prerequisite_anchor_ids||[]).slice(0,4),trigger_conditions:(a.trigger_conditions||[]).slice(0,2).map(x=>compactText(x,180)),blocking_conditions:(a.blocking_conditions||[]).slice(0,1).map(x=>compactText(x,180))}));
   }
 
   function routineNpcs(query,max=2){
@@ -1100,7 +1145,7 @@ Never silently rewrite established state. The player controls one protagonist; a
       options:"Offer 2-4 plausible next actions or questions based on known information. Keep them concise and do not rank them as the correct answer.",
       direct:"Give one or two concrete suggestions for getting unstuck, with a brief reason grounded in known information. Do not reveal hidden facts or guarantee success."
     };
-    return `UNIVERSAL RPG — PLAYER HINT v0.6.1
+    return `UNIVERSAL RPG — PLAYER HINT v0.6.2
 
 This is optional out-of-character help. It is NOT an in-world action and must not advance time, resolve uncertainty, trigger NPC actions, mutate state, or establish new canon. Use only the PLAYER-KNOWN CONTEXT below. Never infer or reveal hidden NPC motives, hidden world facts, undiscovered clues, secret identities, future scripted events, numeric mechanics, or objective probabilities. A hint may remind the player of known information and suggest reasonable approaches; it must not identify a single "correct" path unless the known situation genuinely leaves only one. Do not recommend repeating a recently failed or fruitless action unless the circumstances have materially changed. If the player has been circling the same scene, suggest a different category of approach or a broader intention.
 
@@ -1132,7 +1177,7 @@ ${JSON.stringify(playerFacingHintContext())}`;
   }
 
   function compilerPrompt(form){
-    return `UNIVERSAL RPG CAMPAIGN COMPILER — v0.6.1
+    return `UNIVERSAL RPG CAMPAIGN COMPILER — v0.6.2
 
 Compile the user's campaign request into a compact playable starting state plus a hidden scenario framework. The output structure is enforced by the API schema; focus on correct content rather than explaining the schema.
 
@@ -1144,7 +1189,7 @@ Core rules:
 - Foundation facts are immutable campaign assumptions. Generation constraints define what future creation may or may not introduce.
 - THE OUTPUT campaign.source_mode MUST EXACTLY MATCH USER REQUEST source_mode. Never relabel Canonical, Adaptive, Inspirational, or Original.
 - Source-mode semantics are binding:
-  * Canonical: preserve established source characters, major events, relationships, discoveries, and broad sequence whenever they remain causally compatible with player agency. Adapt the route, timing, or location rather than discarding a source event because the player did not reproduce an exact scene. Never force a player choice or predetermined outcome.
+  * Canonical: preserve established source characters, major events, relationships, discoveries, and their source order whenever they remain causally possible. Player agency may alter staging, exact route, timing, dialogue, or later consequences; it does NOT by itself authorize skipping/reordering source beats. A preserved source beat may be bypassed only when established player-caused facts genuinely make it impossible or inappropriate. Never force a player choice or predetermined outcome.
   * Adaptive: preserve major source anchors, important characters, relationships, and core setting truths, but allow freer reordering, relocation, combination, or branching when player choices justify it.
   * Inspirational: source material guides tone/themes only; source events are not obligations.
   * Original: there is no source-fidelity obligation beyond the user's explicit premise and notes.
@@ -1165,13 +1210,20 @@ Compiled runtime package rules:
 - Keep this runtime package compact. It should make common play deterministic, not become an encyclopedia.
 
 Scenario framework rules:
-- Build a hidden scenario framework with roughly 3-8 anchors for a normal campaign opening. Anchors are events, encounters, discoveries, transitions, or important developments—not predetermined player choices or outcomes.
-- In Canonical or Adaptive mode, use source-compatible anchors so the campaign has forward structure. In Canonical mode, major near-term source encounters should normally be major canonical anchors.
-- Important near-term source NPCs who are likely to matter in the first few anchors should be compiled as NPCs even if their status is "elsewhere"; they need not be visible to the protagonist yet.
+- Build a hidden scenario framework with roughly 4-10 anchors for a normal campaign opening. Canonical source adaptations should usually use 5-10 anchors so important intermediate source beats are not collapsed into a few famous destinations. Anchors are events, encounters, discoveries, transitions, or important developments—not predetermined player choices or outcomes.
+- BEFORE choosing anchors in Canonical mode, reconstruct the source chronology from the immediate pre-play history through the next several major beats. Put source events that have already happened before the first player-controlled moment into scenario.opening_canon. These are authoritative opening history, not future anchors.
+- In Canonical mode, represent the next source sequence as granular canonical anchors. Do not omit an intermediate source encounter merely because a later destination is more famous. Do not substitute generic setting exposition/customs for a named/source-critical encounter that should occur first.
+- Every anchor must have sequence_index, sequence_policy, event_identity, prerequisite_anchor_ids, and required_npc_ids. Use sequence_index values such as 10,20,30... so later repair can insert beats.
+- sequence_policy="locked" means the event identity/order is source-critical and can be bypassed only if established play makes it genuinely impossible. "preserve" means preserve the event and its relative order but allow broad staging/timing relocation. "flexible" permits freer reordering/combination. In Canonical mode, major/supporting canonical anchors should normally be locked or preserve, not all flexible.
+- Canonical prerequisites are binding chronology. A later canonical anchor MUST remain pending until its prerequisite anchors are completed, bypassed, or impossible. In particular, do not make a later city/destination/training arc eligible while earlier preserved encounters, rescues, introductions, or transitional locations remain unresolved.
+- In Adaptive mode, use source-compatible anchors with more freedom to reorder/relocate; sequence fields still document the intended source order but may use flexible policies.
+- Important near-term source NPCs who are likely to matter in the first few anchors should be compiled as NPCs even if their status is "elsewhere"; they need not be visible to the protagonist yet. Every required_npc_id must refer to a compiled NPC.
 - Future/spoilery anchors should use visibility="hidden". Only make an anchor public if the protagonist already knows the objective/event exists.
-- At least one opening anchor MUST be active or eligible. Later anchors begin pending until their trigger conditions become true. A source-guided campaign with zero anchors is invalid and must not be returned.
-- adaptation_guidance should explain how the event can meet the player naturally if they take a different reasonable route. The world can come to the player; do not require a magic command or exact route.
+- At least one opening anchor MUST be active or eligible. Later preserved/locked anchors begin pending until prerequisites are satisfied. A source-guided campaign with zero anchors is invalid and must not be returned.
+- adaptation_guidance should explain how the SAME event identity can meet the player naturally if they take a different reasonable route. Adapt presentation; do not replace the event with a later beat.
 - completion_conditions describe what makes the anchor genuinely resolved. blocking_conditions describe facts that would actually make it impossible/inappropriate.
+- If exact source chronology is uncertain, keep the uncertain beat conservative/general and DO NOT promote a later source event ahead of it. Never invent false precision merely to fill the sequence.
+- Opening narration should mention any protagonist-known opening_canon that is immediately relevant (for example how the protagonist arrived or was rescued) instead of erasing it from play history.
 - director_rules should include campaign-specific principles for pacing, source fidelity, NPC initiative, and avoiding repetitive filler.
 - The director's needs_bootstrap must be false in a newly compiled campaign.
 
@@ -1194,8 +1246,8 @@ ${JSON.stringify(form)}`;
     }
 
     const anchors=compiled.scenario?.anchors||[];
-    if(anchors.length<3) issues.push(`Scenario has ${anchors.length} anchors; opening campaigns should normally compile 3-8.`);
-    if(anchors.length>8) issues.push(`Scenario has ${anchors.length} anchors; keep the opening framework to 3-8.`);
+    if(anchors.length<4) issues.push(`Scenario has ${anchors.length} anchors; opening campaigns should normally compile 4-10.`);
+    if(anchors.length>10) issues.push(`Scenario has ${anchors.length} anchors; keep the opening framework to 4-10.`);
     if(!anchors.some(a=>["active","eligible"].includes(a.status))) issues.push("No scenario anchor is active or eligible at campaign start.");
     if(compiled.scenario?.director?.needs_bootstrap===true) issues.push("New campaign scenario director still requests bootstrap.");
     if(!compiled.world?.current_place?.id) issues.push("Current place has no stable id.");
@@ -1221,7 +1273,30 @@ ${JSON.stringify(form)}`;
     if(sourceGuided){
       const substantive=anchors.filter(a=>["major","supporting"].includes(a.importance));
       if(!substantive.length) issues.push(`${requestedMode} campaign has no major/supporting source-guided anchor.`);
-      if(requestedMode==="Canonical" && !anchors.some(a=>a.source_role==="canonical" && ["major","supporting"].includes(a.importance))) issues.push("Canonical campaign has no major/supporting canonical anchor.");
+      if(requestedMode==="Canonical"){
+        const canonical=anchors.filter(a=>a.source_role==="canonical"&&["major","supporting"].includes(a.importance)).slice().sort((a,b)=>a.sequence_index-b.sequence_index);
+        if(!canonical.length) issues.push("Canonical campaign has no major/supporting canonical anchor.");
+        const sequenceSeen=new Set();
+        const anchorIds=new Set(anchors.map(a=>a.id));
+        const npcIds=new Set((compiled.npcs||[]).map(n=>n.id));
+        for(const a of canonical){
+          if(sequenceSeen.has(a.sequence_index)) issues.push(`Canonical sequence_index ${a.sequence_index} is duplicated.`); else sequenceSeen.add(a.sequence_index);
+          if(!String(a.event_identity||"").trim()) issues.push(`Canonical anchor ${a.id} has no event_identity.`);
+          for(const pid of a.prerequisite_anchor_ids||[]) if(!anchorIds.has(pid)) issues.push(`Canonical anchor ${a.id} references unknown prerequisite ${pid}.`);
+          for(const nid of a.required_npc_ids||[]) if(!npcIds.has(nid)) issues.push(`Canonical anchor ${a.id} requires uncompiled NPC ${nid}.`);
+          for(const pid of a.prerequisite_anchor_ids||[]){ const p=anchors.find(x=>x.id===pid); if(p&&p.sequence_index>=a.sequence_index) issues.push(`Canonical anchor ${a.id} has non-earlier prerequisite ${pid}.`); }
+        }
+        const preserved=canonical.filter(a=>a.sequence_policy!=="flexible");
+        if(canonical.length && !preserved.length) issues.push("Canonical campaign made every canonical anchor flexible; at least source-critical beats must be locked/preserve.");
+        for(let i=1;i<preserved.length;i++) if(!(preserved[i].prerequisite_anchor_ids||[]).length) issues.push(`Canonical anchor ${preserved[i].id} has no prerequisite and can leap ahead of source order.`);
+        const terminal=new Set(["completed","bypassed","impossible"]);
+        const frontier=preserved.find(a=>!terminal.has(a.status));
+        if(frontier){
+          for(const a of preserved){
+            if(a.id!==frontier.id && !terminal.has(a.status) && ["active","eligible"].includes(a.status)) issues.push(`Canonical anchor ${a.id} is ${a.status} before sequence frontier ${frontier.id}.`);
+          }
+        }
+      }
     }
 
     const idPattern=/^[a-z][a-z0-9_]*$/;
@@ -1239,11 +1314,11 @@ ${JSON.stringify(form)}`;
   }
 
   function campaignRepairPrompt(form,candidate,issues,{astra=false}={}){
-    return `UNIVERSAL RPG CAMPAIGN COMPILER — TARGETED REPAIR v0.6.1
+    return `UNIVERSAL RPG CAMPAIGN COMPILER — TARGETED REPAIR v0.6.2
 
 Repair the supplied compiled campaign. Return the COMPLETE campaign package in the normal campaign_compile schema, not a patch.
 
-The browser has already run deterministic validation. Fix every listed issue while preserving correct content and the user's request. Do not gratuitously rewrite unrelated material. The user's selected source_mode is binding. Keep one player persona; NPCs remain autonomous. Preserve hidden information and source-fidelity rules. Ensure the scenario has 3-8 opening anchors with at least one active/eligible anchor and a viable path forward. Also repair the compiled runtime package: stable action ids, valid route endpoints, valid hazard references, and a useful opening action catalog.
+The browser has already run deterministic validation. Fix every listed issue while preserving correct content and the user's request. Do not gratuitously rewrite unrelated material. The user's selected source_mode is binding. Keep one player persona; NPCs remain autonomous. Preserve hidden information and source-fidelity rules. Ensure the scenario has 4-10 opening anchors with at least one active/eligible anchor and a viable path forward. In Canonical mode, reconstruct the immediate source chronology rather than patching only the named later destination: populate opening_canon for already-completed pre-play source events, give canonical anchors explicit sequence_index/sequence_policy/event_identity/prerequisites/required NPCs, and keep later beats pending until earlier preserved beats resolve. Also repair the compiled runtime package: stable action ids, valid route endpoints, valid hazard references, and a useful opening action catalog.
 
 ${astra?"This is the escalation pass because a GPT-6 Sol repair still failed deterministic validation. Reconcile the remaining issues carefully; do not broaden or embellish beyond what the request/source supports.":"This is the normal GPT-6 Sol repair pass. Make the smallest coherent corrections required by validation."}
 
@@ -1283,7 +1358,7 @@ ${JSON.stringify(candidate)}`;
 
   function adjudicationPrompt(playerText,reviewTier="routine"){
     const pending=state.pending_action?JSON.stringify({intent_summary:state.pending_action.intent_summary,original_text:state.pending_action.original_text,assessment_message:state.pending_action.assessment_message},null,2):"NONE";
-    return `UNIVERSAL RPG — INTENT & ADJUDICATION PHASE v0.6.1
+    return `UNIVERSAL RPG — INTENT & ADJUDICATION PHASE v0.6.2
 
 Classify the player's message before resolving anything. The player may be asking for clarification, asking for a risk assessment, proposing/committing to an action, examining something in-world, communicating, or speaking meta-game.
 
@@ -1365,7 +1440,7 @@ ${playerText}`;
   }
 
   function clarificationPrompt(playerText){
-    return `UNIVERSAL RPG — NARROW CLARIFICATION v0.6.1
+    return `UNIVERSAL RPG — NARROW CLARIFICATION v0.6.2
 
 Answer the player's out-of-action question from the supplied PLAYER-KNOWN state only. Do not advance time, mutate state, trigger NPC actions, invent undiscovered facts, or reveal hidden information. If the state does not support an answer, say what is not yet known and identify what kind of in-world action could establish it. Be concise.
 
@@ -1385,14 +1460,17 @@ ${playerText}`;
       npc_relationship:npc?.hidden?.relationship||null,
       relevant_npc_knowledge:selectRelevant(npc?.hidden?.knowledge||[],playerText,3,x=>x).map(x=>compactText(x,180)),
       relevant_public_facts:compactFacts(playerText,{hidden:false,max:3}).map(f=>f.text),
+      canonical_sequence:String(state.campaign?.source_mode||"")==="Canonical"?compactScenario(playerText,{publicOnly:false,max:4}):null,
       previous_narration:recentNarratorLine()
     };
   }
 
   function npcReplyPrompt(npc,playerText){
-    return `UNIVERSAL RPG — ROUTINE NPC COGNITION v0.6.1
+    return `UNIVERSAL RPG — ROUTINE NPC COGNITION v0.6.2
 
 The engine has already determined this is an ordinary conversation with ${npc.name}, not a persuasion/deception/threat check. Respond as the autonomous NPC using only what that NPC reasonably knows or believes. Do not alter external world facts, reveal hidden scenario anchors, or decide a contested social outcome. You may refine only the NPC's current intention when the conversation naturally changes it. Keep the spoken response concise and in character.
+
+Canonical-sequence rule: when CONTEXT.canonical_sequence is present, treat its earliest unresolved locked/preserve canonical anchor as a hidden chronology constraint. The NPC may act naturally, but must not offer a route, destination, relationship, or source event that skips/replaces an earlier preserved source beat. Do not reveal the hidden sequence to the player. A different reasonable player action changes staging, not source order, unless established facts have genuinely made the earlier beat impossible.
 
 CONTEXT:
 ${JSON.stringify(npcReplyContext(npc,playerText))}
@@ -1402,7 +1480,7 @@ ${playerText}`;
   }
 
   function assessmentPrompt(playerText,adj,preview,requiresConfirmation){
-    return `UNIVERSAL RPG — PLAYER-FACING ASSESSMENT v0.6.1
+    return `UNIVERSAL RPG — PLAYER-FACING ASSESSMENT v0.6.2
 
 Give the player a concise, natural referee assessment before any action is resolved. Use only the CHARACTER-KNOWN assessment data below. Do not reveal numeric probabilities, hidden factors, hidden statistics, objective difficulty, or hidden scenario anchors. Explain the important visible reasons in ordinary language.
 
@@ -1428,13 +1506,13 @@ requires_confirmation: ${requiresConfirmation}`;
   }
 
   function outcomePrompt(playerText,adjudication,resolution){
-    return `UNIVERSAL RPG — OUTCOME & NARRATION PHASE v0.6.1
+    return `UNIVERSAL RPG — OUTCOME & NARRATION PHASE v0.6.2
 
 The resolution engine has already fixed the action outcome. It may be deterministic or probabilistic. Accept the supplied result exactly. Do not reroll it, reverse it, or alter its stated magnitude. Probabilistic magnitude may be marginal_success, solid_success, strong_success, exceptional_success, marginal_failure, failure, severe_failure, or exceptional_failure. Treat magnitude as degree/quality of the resolved result, not permission to invent unrelated consequences.
 
 Narrate the consequence naturally in the established tone. Do not reveal numeric probability, random sample, hidden stats, private NPC reasoning, hidden world information, or hidden scenario anchors. Explain relevant causes fictionally. NPCs remain autonomous and may react according to their own state.
 
-Provide only state updates causally implied by this result. Do not alter campaign foundation. New facts must obey generation constraints and may not contradict established canon. Reconcile state when the result makes an old fact obsolete or resolves/fails an open thread. In source-guided campaigns, compatible active/eligible scenario anchors may inform what meaningful discovery or encounter results, but never override the fixed engine result or force a player choice.
+Provide only state updates causally implied by this result. Do not alter campaign foundation. New facts must obey generation constraints and may not contradict established canon. Reconcile state when the result makes an old fact obsolete or resolves/fails an open thread. In source-guided campaigns, compatible active/eligible scenario anchors may inform what meaningful discovery or encounter results, but never override the fixed engine result or force a player choice. In Canonical mode, do not use an action outcome to jump to a later source event/destination while an earlier locked/preserve canonical anchor remains unresolved and possible.
 
 Entity identity rules:
 - AUTHORITATIVE STATE.existing_npcs is an identity registry. Never return an npc_addition whose id already appears there.
@@ -1456,7 +1534,7 @@ ${JSON.stringify(resolution)}`;
   }
 
   function scenarioRepairPrompt(){
-    return `UNIVERSAL RPG — SCENARIO FRAMEWORK BOOTSTRAP v0.6.1
+    return `UNIVERSAL RPG — SCENARIO FRAMEWORK BOOTSTRAP v0.6.2
 
 Build a scenario framework for an existing migrated campaign that predates scenario anchors. Do NOT rewrite established campaign/world state. Do NOT retroactively assert that undiscovered events already happened. Use the campaign's existing source_mode as binding unless a preserved creation_request explicitly records a different selected source_mode.
 
@@ -1466,11 +1544,13 @@ Source-mode semantics:
 - Inspirational: thematic guidance only.
 - Original: build original forward structure from the established premise.
 
-Create 3-8 future/current anchors that can move play beyond the present scene. Do not force outcomes or player choices. If a canonical/source detail is not supported by the campaign request/state and you are uncertain, keep the anchor general rather than inventing false precision. The world can come to the player through autonomous NPC action when causally appropriate.
+Create 4-10 future/current anchors that can move play beyond the present scene. Do not force outcomes or player choices. If a canonical/source detail is not supported by the campaign request/state and you are uncertain, keep the anchor general rather than inventing false precision. The world can come to the player through autonomous NPC action when causally appropriate.
 - At least one opening anchor must be active or eligible.
-- In Canonical/Adaptive source-guided play, include the next major source-compatible encounter/discovery as a major or supporting anchor when it remains causally possible.
+- In Canonical play, reconstruct the nearest remaining source chronology from the CURRENT established state. Give canonical anchors explicit source-order sequence_index values, locked/preserve policies for source-critical beats, event_identity, prerequisites, and required NPC ids. Do not make a later destination/event eligible while an earlier preserved beat remains causally possible.
+- Do not retroactively add missing opening events to opening_canon if the existing campaign has already established a contradictory history. The repair is forward-looking and must respect established state.
+- In Adaptive source-guided play, preserve important source beats with freer relocation/reordering.
 - Return any important near-term NPCs needed by those anchors in npc_additions with status="elsewhere" unless they are already present in the authoritative state. Do not duplicate an existing NPC id.
-- The repair is forward-looking: never claim that an undiscovered event already occurred simply to match the source.
+- Never claim that an undiscovered event already occurred simply to match the source.
 
 Set director.needs_bootstrap=false. Preserve current turn/place in the director bookkeeping fields.
 
@@ -1482,7 +1562,7 @@ ${JSON.stringify(scenarioBootstrapContext())}`;
   }
 
   function directorPrompt(trigger){
-    return `UNIVERSAL RPG — ADVENTURE DIRECTOR v0.6.1
+    return `UNIVERSAL RPG — ADVENTURE DIRECTOR v0.6.2
 
 You are not resolving the player's just-completed action; that result is already committed. Decide whether the world should now advance on the SAME turn through an eligible scenario anchor, autonomous NPC initiative, scene transition, thread reconciliation, or a causally justified remote development.
 
@@ -1491,7 +1571,7 @@ Director principles:
 - Do not require the player to guess a magic command. If an eligible event or autonomous NPC has reason to reach the protagonist, the world may come to the player.
 - Avoid repetitive filler loops. When the player has substantially explored the same scene or repeated a broad search/travel intention, prefer a meaningful development if one is causally available.
 - If turns_since_development >= 2 or repeat_place_turns >= 2, treat the scene as stalled. In a source-guided campaign, an eligible/active major or supporting anchor should normally advance now unless a blocking condition actually prevents it. Do not answer a stalled scene merely by telling the player to choose another direction or repeat the same search.
-- Canonical mode: preserve compatible canonical anchors and broad sequence. Adapt route, staging, or timing rather than silently dropping the event because the player took a different reasonable path.
+- Canonical mode: treat canonical sequence_index/prerequisite_anchor_ids/sequence_policy as binding chronology. The earliest unresolved locked/preserve anchor is the source frontier. Do not introduce, activate, name as the party's next destination, or otherwise substitute a later source beat while that frontier remains causally possible. Adapt route, staging, dialogue, or timing so the SAME event identity can still occur. A locked/preserve anchor may be bypassed/impossible only when established player-caused facts genuinely make it unavailable—not merely because the player took a different reasonable route.
 - Adaptive mode: preserve major source anchors/characters but allow freer relocation, reordering, or combination.
 - Inspirational/Original modes: advance only from established campaign logic, NPC agency, open situations, and generation constraints.
 - Hidden anchors are referee structure. Never mention them as anchors or reveal future/spoilery information in narration.
@@ -1655,11 +1735,52 @@ ${JSON.stringify(directorContext(trigger))}`;
     }
   }
 
+  function anchorTerminalStatus(status){ return ["completed","bypassed","impossible"].includes(status); }
+
+  function anchorPrerequisitesSatisfied(owner,a){
+    const anchors=owner?.scenario?.anchors||[];
+    return (a?.prerequisite_anchor_ids||[]).every(id=>{ const p=anchors.find(x=>x.id===id); return !!p&&anchorTerminalStatus(p.status); });
+  }
+
+  function reconcileCanonicalSequence(owner){
+    if(String(owner?.campaign?.source_mode||"")!=="Canonical" || !owner?.scenario) return owner?.scenario;
+    const preserved=(owner.scenario.anchors||[]).filter(a=>a.source_role==="canonical"&&a.importance!=="optional"&&a.sequence_policy!=="flexible").slice().sort((a,b)=>a.sequence_index-b.sequence_index);
+    const frontier=preserved.find(a=>!anchorTerminalStatus(a.status));
+    for(const a of preserved){
+      if(anchorTerminalStatus(a.status)) continue;
+      if(a===frontier && anchorPrerequisitesSatisfied(owner,a)){
+        if(a.status==="pending") a.status="eligible";
+      }else if(["active","eligible"].includes(a.status)){
+        a.status="pending";
+      }
+    }
+    return owner.scenario;
+  }
+
+  function assertCanonicalSequenceIntegrity(owner){
+    if(String(owner?.campaign?.source_mode||"")!=="Canonical" || !owner?.scenario) return true;
+    const anchors=owner.scenario.anchors||[];
+    const preserved=anchors.filter(a=>a.source_role==="canonical"&&a.importance!=="optional"&&a.sequence_policy!=="flexible").slice().sort((a,b)=>a.sequence_index-b.sequence_index);
+    const frontier=preserved.find(a=>!anchorTerminalStatus(a.status));
+    for(const a of preserved){
+      if(["active","eligible","completed"].includes(a.status) && !anchorPrerequisitesSatisfied(owner,a)) throw new Error(`Canonical sequence violation: ${a.id} advanced before prerequisite source beats.`);
+      if(frontier && a.id!==frontier.id && !anchorTerminalStatus(a.status) && ["active","eligible"].includes(a.status)) throw new Error(`Canonical sequence violation: ${a.id} advanced ahead of frontier ${frontier.id}.`);
+    }
+    return true;
+  }
+
   function validateScenario(scenario,ownerState=null,{requireAnchors=false}={}){
     if(!scenario||typeof scenario!=="object") throw new Error("Scenario framework is missing.");
     if(!["original","source_guided"].includes(scenario.mode)) throw new Error("Scenario framework has invalid mode.");
-    if(!Array.isArray(scenario.anchors)||!Array.isArray(scenario.director_rules)) throw new Error("Scenario framework has invalid anchor/rule collections.");
+    if(!Array.isArray(scenario.opening_canon)||!Array.isArray(scenario.anchors)||!Array.isArray(scenario.director_rules)) throw new Error("Scenario framework has invalid opening/anchor/rule collections.");
+    validateUniqueIds(scenario.opening_canon,"Opening canon");
     validateUniqueIds(scenario.anchors,"Scenario anchors");
+    const scenarioAnchorIds=new Set(scenario.anchors.map(a=>a.id));
+    const ownerNpcIds=new Set((ownerState?.npcs||[]).map(n=>n.id));
+    for(const a of scenario.anchors){
+      for(const pid of a.prerequisite_anchor_ids||[]) if(!scenarioAnchorIds.has(pid)) throw new Error(`Scenario anchor ${a.id} references unknown prerequisite ${pid}.`);
+      for(const nid of a.required_npc_ids||[]) if(ownerState?.npcs && !ownerNpcIds.has(nid)) throw new Error(`Scenario anchor ${a.id} references unknown required NPC ${nid}.`);
+    }
     scenario.director=scenario.director&&typeof scenario.director==="object"?scenario.director:freshDirectorState(ownerState,false);
     scenario.director.needs_bootstrap=scenario.director.needs_bootstrap===true;
     scenario.director.turns_since_development=Number.isInteger(scenario.director.turns_since_development)?Math.max(0,scenario.director.turns_since_development):0;
@@ -1679,6 +1800,7 @@ ${JSON.stringify(directorContext(trigger))}`;
         if(first) first.status="eligible";
       }
     }
+    if(ownerState){ ownerState.scenario=scenario; reconcileCanonicalSequence(ownerState); scenario=ownerState.scenario; assertCanonicalSequenceIntegrity(ownerState); }
     return scenario;
   }
 
@@ -1697,7 +1819,7 @@ ${JSON.stringify(directorContext(trigger))}`;
       c.campaign.source_mode=form.source_mode;
       c.scenario.mode=scenarioModeForSourceMode(form.source_mode);
     }
-    c.scenario=validateScenario(c.scenario,{turn:0,world:c.world,campaign:c.campaign});
+    c.scenario=validateScenario(c.scenario,{turn:0,world:c.world,campaign:c.campaign,npcs:c.npcs,scenario:c.scenario});
     // Never silently accept an empty campaign framework. A repair pass will run immediately
     // after compilation and again before play if necessary.
     c.scenario.director.needs_bootstrap=c.scenario.anchors.length===0 || c.scenario.director.needs_bootstrap===true;
@@ -1768,6 +1890,9 @@ ${JSON.stringify(directorContext(trigger))}`;
     for(const ch of updates.npc_intention_changes||[]){ const n=findNpc(draft,ch.npc_id); if(!n) throw new Error(`Unknown NPC in intention change: ${ch.npc_id}`); n.hidden.current_intention=ch.current_intention; }
     for(const ch of updates.thread_status_changes||[]){ const t=findThread(draft,ch.thread_id); if(!t) throw new Error(`Unknown thread in status change: ${ch.thread_id}`); t.status=ch.status; }
     for(const ch of updates.scenario_anchor_status_changes||[]){ const a=findAnchor(draft,ch.anchor_id); if(!a) throw new Error(`Unknown scenario anchor in status change: ${ch.anchor_id}`); a.status=ch.status; }
+    assertCanonicalSequenceIntegrity(draft);
+    reconcileCanonicalSequence(draft);
+    assertCanonicalSequenceIntegrity(draft);
 
     validateUniqueIds(draft.player.inventory,"Inventory"); validateUniqueIds(draft.player.knowledge,"Knowledge"); validateUniqueIds(draft.world.facts,"World facts"); validateUniqueIds(draft.world.known_places,"Known places"); validateUniqueIds(draft.npcs,"NPCs"); validateUniqueIds(draft.threads,"Threads"); validateUniqueIds(draft.scenario.anchors,"Scenario anchors");
     draft.revision=(Number.isInteger(draft.revision)?draft.revision:0)+1;
@@ -1881,12 +2006,19 @@ ${JSON.stringify(directorContext(trigger))}`;
 
     setStatus("","Building scenario framework...");
     const api=await callWorker(scenarioRepairPrompt(),"scenario_compile","scenario_compile");
-    const repaired=validateScenario(api.data.scenario,state,{requireAnchors:true});
+    const validationOwner=deepClone(state);
+    validationOwner.npcs=deepClone(state.npcs||[]);
+    const existingNpcIds=new Set(validationOwner.npcs.map(n=>n.id));
+    for(const npc of api.data.npc_additions||[]) if(!existingNpcIds.has(npc.id)){ validationOwner.npcs.push(deepClone(npc)); existingNpcIds.add(npc.id); }
+    validationOwner.scenario=deepClone(api.data.scenario);
+    const repaired=validateScenario(validationOwner.scenario,validationOwner,{requireAnchors:true});
     repaired.mode=scenarioModeForSourceMode(state.campaign.source_mode);
     repaired.director.needs_bootstrap=false;
 
     const npcAdded=applyScenarioBootstrapNpcs(api.data.npc_additions);
     state.scenario=repaired;
+    reconcileCanonicalSequence(state);
+    assertCanonicalSequenceIntegrity(state);
     state.revision+=1;
     addEvent("scenario_framework_bootstrapped",{source_mode:state.campaign.source_mode,anchor_count:repaired.anchors.length,npcs_added:npcAdded,model:api.model,build_id:BUILD_ID});
     addDebug({phase:"scenario_bootstrap",model:api.model,ai_profile:api.ai_profile,request_id:api.openai_request_id,response_id:api.response_id,usage:api.usage,request_metrics:api.request_metrics,anchor_count:repaired.anchors.length,npcs_added:npcAdded,build_id:BUILD_ID});
