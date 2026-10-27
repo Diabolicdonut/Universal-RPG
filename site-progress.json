@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "project": "Universal-RPG",
+  "asOf": "2026-10-26",
+  "revision": "v0.6.2",
+  "revisionSource": {
+    "type": "text",
+    "file": "audit.md",
+    "pattern": "^## Version\\s+([0-9.]+)",
+    "prefix": "v"
+  },
+  "progress": {
+    "label": "Tracked generalized RPG capabilities",
+    "completed": 4,
+    "total": 7,
+    "basis": "Tracked: browser AI interface, deterministic state, source/adventure compilation, canonical sequence locks. Remaining: fully autonomous NPCs, broader source-conditioned events and multi-genre acceptance.",
+    "note": "This is a newly defined delivery checklist, not an absolute measure of RPG complexity."
+  }
+}
